@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.audio_engine import AudioEngine
+from core.app_config import get_default_config_path, load_app_config
 from core.audio_service import (
     AudioDevice,
     list_input_devices,
@@ -38,7 +39,9 @@ class MainWindow(QWidget):
         self.setWindowTitle("Translator Audio App")
         self.resize(860, 620)
 
-        self.engine = AudioEngine()
+        self.app_config_path = get_default_config_path()
+        self.app_config = load_app_config(self.app_config_path)
+        self.engine = AudioEngine(self.app_config)
 
         self.input_devices: List[AudioDevice] = []
         self.output_devices: List[AudioDevice] = []
@@ -61,7 +64,8 @@ class MainWindow(QWidget):
 
         self.info_label = QLabel(
             "Pipeline сейчас: real mic -> Python AudioEngine -> TranslatorMic\n"
-            "В Telegram выбирай устройство записи: Monitor of TranslatorMic"
+            "В Telegram выбирай устройство записи: Monitor of TranslatorMic\n"
+            f"Config: {self.app_config_path}"
         )
         self.main_layout.addWidget(self.info_label)
 
@@ -231,9 +235,9 @@ class MainWindow(QWidget):
                 output_device_index=output_index,
                 selected_pactl_input_name=selected_input_name,
                 selected_pactl_output_name=selected_output_name,
-                samplerate=48000,
-                channels=1,
-                blocksize=1024,
+                samplerate=self.app_config.audio.samplerate,
+                channels=self.app_config.audio.channels,
+                blocksize=self.app_config.audio.blocksize,
                 stt_window_seconds=stt_window_seconds,
             )
 

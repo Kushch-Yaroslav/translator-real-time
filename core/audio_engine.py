@@ -17,6 +17,7 @@ from core.audio_service import (
     move_app_playback_to_sink,
     move_app_recording_to_source,
 )
+from core.app_config import AppConfig, DEFAULT_CONFIG
 from core.sst.nim_realtime_stt_service import (
     NIMRealtimeSTTService,
     NIMRealtimeSTTConfig,
@@ -30,17 +31,13 @@ from core.tts.tts_service import TTSService, TTSConfig
 
 
 class AudioEngine:
-    MAX_TTS_QUEUE_LATENCY_SEC = 0.75
-    FINAL_DEBOUNCE_SEC = 0.6
-    STT_NOISE_GATE_THRESHOLD = 0.009
-    STT_NOISE_GATE_HANGOVER_SEC = 0.35
-
-    def __init__(self):
+    def __init__(self, app_config: AppConfig | None = None):
         self.session: Optional[AudioSession] = None
         self.worker_thread: Optional[threading.Thread] = None
         self.phrase_worker_thread: Optional[threading.Thread] = None
         self.final_worker_thread: Optional[threading.Thread] = None
         self.running = False
+        self.app_config = app_config or DEFAULT_CONFIG
 
         self.on_log: Optional[Callable[[str], None]] = None
         self.on_error: Optional[Callable[[str], None]] = None
@@ -63,6 +60,10 @@ class AudioEngine:
         self._pending_final_text: str = ""
         self._pending_final_updated_at: float = 0.0
         self._pending_final_lock = threading.Lock()
+        self._last_partial_text: str = ""
+        self._last_partial_changed_at: float = 0.0
+        self._last_partial_emitted_text: str = ""
+        self._partial_lock = threading.Lock()
         self._stt_speech_hangover_chunks = 0
         self._stt_speech_hangover_max_chunks = 1
 
@@ -97,7 +98,7 @@ class AudioEngine:
             1,
             int(
                 round(
-                    self.STT_NOISE_GATE_HANGOVER_SEC
+                    self.app_config.stt.noise_gate_hangover_sec
                     / (blocksize / float(samplerate))
                 )
             ),
@@ -108,6 +109,7 @@ class AudioEngine:
         self.last_enqueued_final_text = ""
         self._clear_final_text_queue()
         self._clear_pending_final()
+        self._clear_partial_state()
 
         self.processor = ChunkProcessor(
             ChunkProcessorConfig(
@@ -117,10 +119,11 @@ class AudioEngine:
         )
 
         self._log("Loading translation model: EN->RU ...")
+        translation_direction = self._resolve_translation_direction()
         self.translation_service = TranslationService(
             TranslationConfig(
-                direction=TranslationDirection.EN_TO_RU,
-                enabled=True,
+                direction=translation_direction,
+                enabled=self.app_config.translation.enabled,
             )
         )
         self._log("Translation model loaded")
@@ -128,9 +131,9 @@ class AudioEngine:
         self._log("Loading TTS voice: ru_RU-dmitri-medium ...")
         self.tts_service = TTSService(
             TTSConfig(
-                voice_name="ru_RU-dmitri-medium",
-                data_dir="/media/yaroslav/DATA/ai_models/piper",
-                use_cuda=None,
+                voice_name=self.app_config.tts.voice_name,
+                data_dir=self.app_config.tts.data_dir,
+                use_cuda=self.app_config.tts.use_cuda,
             )
         )
         self._log(
@@ -141,14 +144,14 @@ class AudioEngine:
         self._log("Connecting realtime STT: NVIDIA NIM WebSocket (en-US) ...")
         self.realtime_stt = NIMRealtimeSTTService(
             NIMRealtimeSTTConfig(
-                base_url="http://localhost:9000",
-                ws_url="ws://localhost:9000/v1/realtime?intent=transcription",
-                language="en-US",
-                sample_rate_hz=16000,
-                num_channels=1,
-                timeout=10.0,
-                commit_interval_sec=0.5,
-                enable_automatic_punctuation=True,
+                base_url=self.app_config.stt.base_url,
+                ws_url=self.app_config.stt.ws_url,
+                language=self.app_config.stt.language,
+                sample_rate_hz=self.app_config.stt.sample_rate_hz,
+                num_channels=self.app_config.stt.num_channels,
+                timeout=self.app_config.stt.timeout,
+                commit_interval_sec=self.app_config.stt.commit_interval_sec,
+                enable_automatic_punctuation=self.app_config.stt.enable_automatic_punctuation,
                 on_log=self._log,
             )
         )
@@ -246,6 +249,7 @@ class AudioEngine:
         self.last_enqueued_final_text = ""
         self._clear_final_text_queue()
         self._clear_pending_final()
+        self._clear_partial_state()
 
         self._log("AudioEngine stopped")
 
@@ -302,6 +306,15 @@ class AudioEngine:
     def _on_realtime_partial(self, text: str) -> None:
         if not text:
             return
+        text = self._normalize_text(text)
+        if not text:
+            return
+
+        with self._partial_lock:
+            if self._normalize_compare_text(text) != self._normalize_compare_text(self._last_partial_text):
+                self._last_partial_text = text
+                self._last_partial_changed_at = time.monotonic()
+
         self._log(f"PARTIAL: {text}")
 
     def _on_realtime_final(self, text: str) -> None:
@@ -343,7 +356,7 @@ class AudioEngine:
             with self._pending_final_lock:
                 if self._pending_final_text:
                     age = time.monotonic() - self._pending_final_updated_at
-                    if age >= self.FINAL_DEBOUNCE_SEC:
+                    if age >= self.app_config.stt.final_debounce_sec:
                         ready_text = self._pending_final_text
                         self._pending_final_text = ""
                         self._pending_final_updated_at = 0.0
@@ -351,6 +364,8 @@ class AudioEngine:
             if ready_text:
                 self._enqueue_final_text(ready_text)
                 continue
+
+            self._maybe_emit_stable_partial()
 
             time.sleep(0.05)
 
@@ -465,7 +480,7 @@ class AudioEngine:
 
     def _trim_output_queue_if_needed(self, session: AudioSession) -> None:
         queued_audio_seconds = session.get_output_queue_duration_seconds()
-        if queued_audio_seconds <= self.MAX_TTS_QUEUE_LATENCY_SEC:
+        if queued_audio_seconds <= self.app_config.tts.max_queue_latency_sec:
             return
 
         cleared_blocks = session.clear_output_queue()
@@ -482,7 +497,7 @@ class AudioEngine:
         mono = audio[:, 0] if audio.ndim == 2 else audio
         rms = float(np.sqrt(np.mean(np.square(mono)) + 1e-10))
 
-        if rms >= self.STT_NOISE_GATE_THRESHOLD:
+        if rms >= self.app_config.stt.noise_gate_threshold:
             self._stt_speech_hangover_chunks = self._stt_speech_hangover_max_chunks
             return audio
 
@@ -503,6 +518,12 @@ class AudioEngine:
         with self._pending_final_lock:
             self._pending_final_text = ""
             self._pending_final_updated_at = 0.0
+
+    def _clear_partial_state(self) -> None:
+        with self._partial_lock:
+            self._last_partial_text = ""
+            self._last_partial_changed_at = 0.0
+            self._last_partial_emitted_text = ""
 
     def _stage_final_text(self, text: str) -> None:
         text = self._normalize_text(text)
@@ -535,6 +556,42 @@ class AudioEngine:
             self.last_enqueued_final_text = text
         except queue.Full:
             self._handle_error("Final text queue is full, dropping phrase")
+
+    def _maybe_emit_stable_partial(self) -> None:
+        if not self.app_config.stt.partial_emit_enabled:
+            return
+
+        with self._partial_lock:
+            partial_text = self._last_partial_text
+            partial_changed_at = self._last_partial_changed_at
+            last_partial_emitted_text = self._last_partial_emitted_text
+
+        if not partial_text or partial_changed_at <= 0.0:
+            return
+
+        age = time.monotonic() - partial_changed_at
+        if age < self.app_config.stt.partial_stability_sec:
+            return
+
+        if len(partial_text.split()) < self.app_config.stt.partial_min_words:
+            return
+
+        if self._normalize_compare_text(partial_text) == self._normalize_compare_text(last_partial_emitted_text):
+            return
+
+        incremental_text = self._extract_incremental_text(self.last_enqueued_final_text, partial_text)
+        incremental_text = self._normalize_text(incremental_text)
+        if not incremental_text:
+            return
+
+        if len(incremental_text.split()) < self.app_config.stt.partial_min_words:
+            return
+
+        self._log(f"PARTIAL promoted: {incremental_text}")
+        self._enqueue_final_text(incremental_text)
+
+        with self._partial_lock:
+            self._last_partial_emitted_text = partial_text
 
     @staticmethod
     def _merge_final_texts(previous: str, current: str) -> str:
@@ -689,6 +746,12 @@ class AudioEngine:
             self.on_error(message)
         else:
             self._log(message)
+
+    def _resolve_translation_direction(self) -> TranslationDirection:
+        direction = (self.app_config.translation.direction or "").strip().lower()
+        if direction == TranslationDirection.RU_TO_EN.value:
+            return TranslationDirection.RU_TO_EN
+        return TranslationDirection.EN_TO_RU
 
     def _log(self, message: str) -> None:
         if self.on_log:
