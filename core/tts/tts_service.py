@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 from huggingface_hub import hf_hub_download
@@ -12,7 +13,7 @@ from piper import PiperVoice
 class TTSConfig:
     voice_name: str = "en_US-lessac-medium"
     data_dir: str = "/media/yaroslav/DATA/ai_models/piper"
-    use_cuda: bool = False
+    use_cuda: Optional[bool] = None
 
 
 class TTSService:
@@ -22,11 +23,12 @@ class TTSService:
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         self.relative_dir = self._resolve_relative_dir(self.config.voice_name)
+        self.use_cuda = self._resolve_use_cuda(self.config.use_cuda)
 
         self.model_path = self._download_voice_file(f"{self.config.voice_name}.onnx")
         self.config_path = self._download_voice_file(f"{self.config.voice_name}.onnx.json")
 
-        self.voice = PiperVoice.load(str(self.model_path), use_cuda=self.config.use_cuda)
+        self.voice = PiperVoice.load(str(self.model_path), use_cuda=self.use_cuda)
 
     def synthesize(self, text: str, target_samplerate: int) -> np.ndarray:
         text = (text or "").strip()
@@ -82,6 +84,28 @@ class TTSService:
             raise ValueError(f"Unsupported Piper voice: {voice_name}")
 
         return voice_map[voice_name]
+
+    @staticmethod
+    def _resolve_use_cuda(requested: Optional[bool]) -> bool:
+        if requested is not None:
+            return requested and TTSService.has_cuda_provider()
+
+        return TTSService.has_cuda_provider()
+
+    @staticmethod
+    def has_cuda_provider() -> bool:
+        try:
+            import onnxruntime as ort
+
+            providers = ort.get_available_providers()
+        except Exception:
+            return False
+
+        return "CUDAExecutionProvider" in providers
+
+    @staticmethod
+    def get_runtime_backend_label() -> str:
+        return "cuda" if TTSService.has_cuda_provider() else "cpu"
 
     def _resample(self, audio: np.ndarray, from_sr: int, to_sr: int) -> np.ndarray:
         if from_sr == to_sr or audio.size == 0:

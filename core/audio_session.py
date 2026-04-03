@@ -102,6 +102,23 @@ class AudioSession:
         with self._lock:
             self.stopping = False
 
+    def clear_output_queue(self) -> int:
+        cleared = 0
+
+        while not self.output_queue.empty():
+            try:
+                self.output_queue.get_nowait()
+                cleared += 1
+            except queue.Empty:
+                break
+
+        return cleared
+
+    def get_output_queue_duration_seconds(self) -> float:
+        queued_blocks = self.output_queue.qsize()
+        queued_frames = queued_blocks * self.config.blocksize
+        return queued_frames / float(self.config.samplerate)
+
     def _clear_queues(self) -> None:
         while not self.input_queue.empty():
             try:

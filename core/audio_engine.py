@@ -30,9 +30,16 @@ from core.tts.tts_service import TTSService, TTSConfig
 
 
 class AudioEngine:
+    MAX_TTS_QUEUE_LATENCY_SEC = 0.75
+    FINAL_DEBOUNCE_SEC = 0.6
+    STT_NOISE_GATE_THRESHOLD = 0.009
+    STT_NOISE_GATE_HANGOVER_SEC = 0.35
+
     def __init__(self):
         self.session: Optional[AudioSession] = None
         self.worker_thread: Optional[threading.Thread] = None
+        self.phrase_worker_thread: Optional[threading.Thread] = None
+        self.final_worker_thread: Optional[threading.Thread] = None
         self.running = False
 
         self.on_log: Optional[Callable[[str], None]] = None
@@ -50,10 +57,14 @@ class AudioEngine:
 
         self.last_final_text: str = ""
         self.last_translated_text: str = ""
+        self.last_enqueued_final_text: str = ""
 
-        self._translation_lock = threading.Lock()
-        self._restart_lock = threading.Lock()
-        self._restart_in_progress = False
+        self.final_text_queue: queue.Queue[str] = queue.Queue(maxsize=32)
+        self._pending_final_text: str = ""
+        self._pending_final_updated_at: float = 0.0
+        self._pending_final_lock = threading.Lock()
+        self._stt_speech_hangover_chunks = 0
+        self._stt_speech_hangover_max_chunks = 1
 
     def start(
             self,
@@ -81,10 +92,22 @@ class AudioEngine:
         self.current_samplerate = samplerate
         self.current_channels = channels
         self.current_blocksize = blocksize
+        self._stt_speech_hangover_chunks = 0
+        self._stt_speech_hangover_max_chunks = max(
+            1,
+            int(
+                round(
+                    self.STT_NOISE_GATE_HANGOVER_SEC
+                    / (blocksize / float(samplerate))
+                )
+            ),
+        )
 
         self.last_final_text = ""
         self.last_translated_text = ""
-        self._restart_in_progress = False
+        self.last_enqueued_final_text = ""
+        self._clear_final_text_queue()
+        self._clear_pending_final()
 
         self.processor = ChunkProcessor(
             ChunkProcessorConfig(
@@ -107,10 +130,13 @@ class AudioEngine:
             TTSConfig(
                 voice_name="ru_RU-dmitri-medium",
                 data_dir="/media/yaroslav/DATA/ai_models/piper",
-                use_cuda=False,
+                use_cuda=None,
             )
         )
-        self._log("TTS voice loaded")
+        self._log(
+            "TTS voice loaded "
+            f"(backend={self.tts_service.get_runtime_backend_label()})"
+        )
 
         self._log("Connecting realtime STT: NVIDIA NIM WebSocket (en-US) ...")
         self.realtime_stt = NIMRealtimeSTTService(
@@ -132,6 +158,8 @@ class AudioEngine:
         )
         self._log("Realtime STT connected")
 
+        self.running = True
+
         self.session = AudioSession(config)
         self.session.on_error = self._handle_error
         self.session.start()
@@ -146,14 +174,26 @@ class AudioEngine:
             f"Move playback stream to sink '{selected_pactl_output_name}': {'OK' if moved_output else 'FAILED'}"
         )
 
-        self.running = True
-
         self.worker_thread = threading.Thread(
             target=self._processing_loop,
             daemon=True,
             name="audio-processing-loop",
         )
         self.worker_thread.start()
+
+        self.phrase_worker_thread = threading.Thread(
+            target=self._phrase_processing_loop,
+            daemon=True,
+            name="phrase-processing-loop",
+        )
+        self.phrase_worker_thread.start()
+
+        self.final_worker_thread = threading.Thread(
+            target=self._final_debounce_loop,
+            daemon=True,
+            name="final-debounce-loop",
+        )
+        self.final_worker_thread.start()
 
         self._log(
             "AudioEngine started | "
@@ -169,10 +209,14 @@ class AudioEngine:
         self.running = False
 
         worker_thread = self.worker_thread
+        phrase_worker_thread = self.phrase_worker_thread
+        final_worker_thread = self.final_worker_thread
         session = self.session
         realtime_stt = self.realtime_stt
 
         self.worker_thread = None
+        self.phrase_worker_thread = None
+        self.final_worker_thread = None
         self.session = None
         self.realtime_stt = None
 
@@ -188,12 +232,20 @@ class AudioEngine:
         if worker_thread and worker_thread.is_alive():
             worker_thread.join(timeout=2.0)
 
+        if phrase_worker_thread and phrase_worker_thread.is_alive():
+            phrase_worker_thread.join(timeout=2.0)
+
+        if final_worker_thread and final_worker_thread.is_alive():
+            final_worker_thread.join(timeout=2.0)
+
         self.translation_service = None
         self.tts_service = None
 
         self.last_final_text = ""
         self.last_translated_text = ""
-        self._restart_in_progress = False
+        self.last_enqueued_final_text = ""
+        self._clear_final_text_queue()
+        self._clear_pending_final()
 
         self._log("AudioEngine stopped")
 
@@ -238,8 +290,9 @@ class AudioEngine:
                         pass
 
                 if self.realtime_stt is not None:
+                    stt_chunk = self._prepare_chunk_for_stt(processed_chunk)
                     self.realtime_stt.send_audio_chunk(
-                        processed_chunk,
+                        stt_chunk,
                         self.current_samplerate,
                     )
 
@@ -256,107 +309,108 @@ class AudioEngine:
             return
 
         text = self._normalize_text(text)
+        text = self._collapse_immediate_repetitions(text)
         if not text:
             self._log("FINAL: <empty>")
             return
 
-        with self._translation_lock:
-            if not self.running:
-                return
-
-            incremental_text = self._extract_incremental_text(self.last_final_text, text)
-            if not incremental_text:
-                self._log("FINAL skipped: duplicate/overlap")
-                self._restart_realtime_stt_async()
-                return
-
-            self.last_final_text = text
-            self._log(f"FINAL: {text}")
-            self._log(f"FINAL incremental: {incremental_text}")
-
-            if self.translation_service is None:
-                self._restart_realtime_stt_async()
-                return
-
-            translation_started_at = time.perf_counter()
-            try:
-                translated_text = self.translation_service.translate(incremental_text)
-            except Exception as error:
-                self._handle_error(f"Translation error: {error}")
-                self._restart_realtime_stt_async()
-                return
-
-            translated_text = self._normalize_text(translated_text)
-            translation_elapsed = time.perf_counter() - translation_started_at
-            self._log(f"Translation time: {translation_elapsed:.3f} sec")
-
-            if not translated_text:
-                self._log("TRANSLATED: <empty>")
-                self._restart_realtime_stt_async()
-                return
-
-            if self._should_skip_translated_text(translated_text):
-                self._log("TRANSLATED skipped: duplicate")
-                self._restart_realtime_stt_async()
-                return
-
-            self.last_translated_text = translated_text
-            self._log(f"TRANSLATED: {translated_text}")
-
-            if self.tts_service is None:
-                self._restart_realtime_stt_async()
-                return
-
-            tts_started_at = time.perf_counter()
-            try:
-                tts_audio = self.tts_service.synthesize(
-                    translated_text,
-                    target_samplerate=self.current_samplerate,
-                )
-            except Exception as error:
-                self._handle_error(f"TTS error: {error}")
-                self._restart_realtime_stt_async()
-                return
-
-            tts_elapsed = time.perf_counter() - tts_started_at
-            self._log(f"TTS time: {tts_elapsed:.3f} sec")
-
-            duration = (
-                tts_audio.shape[0] / float(self.current_samplerate)
-                if tts_audio.size > 0
-                else 0.0
-            )
-            self._log(f"TTS audio ready: {duration:.2f} sec")
-
-            self._enqueue_tts_audio(tts_audio)
-            self._restart_realtime_stt_async()
-
-    def _restart_realtime_stt_async(self) -> None:
-        if self.realtime_stt is None or not self.running:
+        incremental_text = self._extract_incremental_text(self.last_final_text, text)
+        if not incremental_text:
+            self._log("FINAL skipped: duplicate/overlap")
             return
 
-        with self._restart_lock:
-            if self._restart_in_progress:
-                return
-            self._restart_in_progress = True
+        self.last_final_text = text
+        self._log(f"FINAL: {text}")
+        self._log(f"FINAL incremental: {incremental_text}")
+        self._stage_final_text(incremental_text)
 
-        def worker():
+    def _phrase_processing_loop(self) -> None:
+        while self.running:
             try:
-                if self.realtime_stt is not None and self.running:
-                    self._log("Restarting realtime STT session...")
-                    self.realtime_stt.restart()
-                    self._log("Realtime STT session restarted")
-            except Exception as error:
-                self._handle_error(f"Realtime STT restart error: {error}")
-            finally:
-                with self._restart_lock:
-                    self._restart_in_progress = False
+                text = self.final_text_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
 
-        threading.Thread(
-            target=worker,
-            daemon=True,
-            name="realtime-stt-restart",
-        ).start()
+            if not self.running:
+                break
+
+            self._process_final_text(text)
+
+    def _final_debounce_loop(self) -> None:
+        while self.running:
+            ready_text = ""
+
+            with self._pending_final_lock:
+                if self._pending_final_text:
+                    age = time.monotonic() - self._pending_final_updated_at
+                    if age >= self.FINAL_DEBOUNCE_SEC:
+                        ready_text = self._pending_final_text
+                        self._pending_final_text = ""
+                        self._pending_final_updated_at = 0.0
+
+            if ready_text:
+                self._enqueue_final_text(ready_text)
+                continue
+
+            time.sleep(0.05)
+
+    def _process_final_text(self, text: str) -> None:
+        if not self.running:
+            return
+
+        translation_service = self.translation_service
+        if translation_service is None:
+            self._log("Translation skipped: service is unavailable")
+            return
+
+        translation_started_at = time.perf_counter()
+        try:
+            translated_text = translation_service.translate(text)
+        except Exception as error:
+            self._handle_error(f"Translation error: {error}")
+            return
+
+        translated_text = self._normalize_text(translated_text)
+        translation_elapsed = time.perf_counter() - translation_started_at
+        self._log(f"Translation time: {translation_elapsed:.3f} sec")
+
+        if not translated_text:
+            self._log("TRANSLATED: <empty>")
+            return
+
+        if self._should_skip_translated_text(translated_text):
+            self._log("TRANSLATED skipped: duplicate")
+            return
+
+        self.last_translated_text = translated_text
+        self._log(f"TRANSLATED: {translated_text}")
+
+        tts_service = self.tts_service
+        if tts_service is None:
+            self._log("TTS skipped: service is unavailable")
+            return
+
+        tts_started_at = time.perf_counter()
+        try:
+            tts_audio = tts_service.synthesize(
+                translated_text,
+                target_samplerate=self.current_samplerate,
+            )
+        except Exception as error:
+            self._handle_error(f"TTS error: {error}")
+            return
+
+        tts_elapsed = time.perf_counter() - tts_started_at
+        self._log(f"TTS time: {tts_elapsed:.3f} sec")
+
+        duration = (
+            tts_audio.shape[0] / float(self.current_samplerate)
+            if tts_audio.size > 0
+            else 0.0
+        )
+        self._log(f"TTS audio ready: {duration:.2f} sec")
+
+        self._enqueue_tts_audio(tts_audio)
 
     def _should_output_processed_audio(self) -> bool:
         if self.processor is None:
@@ -380,6 +434,8 @@ class AudioEngine:
 
         if audio.ndim == 1:
             audio = audio.reshape(-1, 1)
+
+        self._trim_output_queue_if_needed(session)
 
         total_frames = audio.shape[0]
         offset = 0
@@ -407,6 +463,129 @@ class AudioEngine:
 
             offset += self.current_blocksize
 
+    def _trim_output_queue_if_needed(self, session: AudioSession) -> None:
+        queued_audio_seconds = session.get_output_queue_duration_seconds()
+        if queued_audio_seconds <= self.MAX_TTS_QUEUE_LATENCY_SEC:
+            return
+
+        cleared_blocks = session.clear_output_queue()
+        self._log(
+            "Dropped stale TTS audio queue "
+            f"({queued_audio_seconds:.2f} sec, blocks={cleared_blocks})"
+        )
+
+    def _prepare_chunk_for_stt(self, chunk: np.ndarray) -> np.ndarray:
+        if chunk.size == 0:
+            return chunk
+
+        audio = chunk.astype(np.float32, copy=False)
+        mono = audio[:, 0] if audio.ndim == 2 else audio
+        rms = float(np.sqrt(np.mean(np.square(mono)) + 1e-10))
+
+        if rms >= self.STT_NOISE_GATE_THRESHOLD:
+            self._stt_speech_hangover_chunks = self._stt_speech_hangover_max_chunks
+            return audio
+
+        if self._stt_speech_hangover_chunks > 0:
+            self._stt_speech_hangover_chunks -= 1
+            return audio
+
+        return np.zeros_like(audio, dtype=np.float32)
+
+    def _clear_final_text_queue(self) -> None:
+        while not self.final_text_queue.empty():
+            try:
+                self.final_text_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def _clear_pending_final(self) -> None:
+        with self._pending_final_lock:
+            self._pending_final_text = ""
+            self._pending_final_updated_at = 0.0
+
+    def _stage_final_text(self, text: str) -> None:
+        text = self._normalize_text(text)
+        if not text:
+            return
+
+        with self._pending_final_lock:
+            pending_text = self._pending_final_text
+
+            if pending_text:
+                merged_text = self._merge_final_texts(pending_text, text)
+                if merged_text != pending_text:
+                    self._log(f"FINAL merged: {merged_text}")
+                self._pending_final_text = merged_text
+            else:
+                self._pending_final_text = text
+
+            self._pending_final_updated_at = time.monotonic()
+
+    def _enqueue_final_text(self, text: str) -> None:
+        normalized_incremental = self._normalize_compare_text(text)
+        normalized_last_enqueued = self._normalize_compare_text(self.last_enqueued_final_text)
+
+        if normalized_incremental == normalized_last_enqueued:
+            self._log("FINAL skipped: already queued")
+            return
+
+        try:
+            self.final_text_queue.put_nowait(text)
+            self.last_enqueued_final_text = text
+        except queue.Full:
+            self._handle_error("Final text queue is full, dropping phrase")
+
+    @staticmethod
+    def _merge_final_texts(previous: str, current: str) -> str:
+        previous = AudioEngine._normalize_text(previous)
+        current = AudioEngine._normalize_text(current)
+
+        if not previous:
+            return current
+
+        if not current:
+            return previous
+
+        previous_norm = AudioEngine._normalize_compare_text(previous)
+        current_norm = AudioEngine._normalize_compare_text(current)
+
+        if previous_norm == current_norm:
+            return previous
+
+        if current_norm.startswith(previous_norm):
+            return current
+
+        extra = AudioEngine._extract_incremental_text(previous, current)
+        if extra:
+            extra_norm = AudioEngine._normalize_compare_text(extra)
+            if extra_norm and extra_norm != current_norm:
+                return f"{previous} {extra}".strip()
+
+        previous_words = previous.split()
+        current_words = current.split()
+        if len(previous_words) >= 4 and len(current_words) <= 4:
+            return f"{previous} {current}".strip()
+
+        trailing_connectors = {
+            "a",
+            "an",
+            "and",
+            "but",
+            "for",
+            "or",
+            "so",
+            "the",
+            "to",
+            "with",
+        }
+        if previous_words:
+            last_word = "".join(ch for ch in previous_words[-1].lower() if ch.isalnum())
+            if last_word in trailing_connectors:
+                return f"{previous} {current}".strip()
+
+        return current
+
     def _should_skip_translated_text(self, text: str) -> bool:
         previous = self._normalize_compare_text(self.last_translated_text)
         current = self._normalize_compare_text(text)
@@ -430,6 +609,39 @@ class AudioEngine:
         if not text:
             return ""
         return " ".join(text.strip().split())
+
+    @staticmethod
+    def _collapse_immediate_repetitions(text: str) -> str:
+        text = AudioEngine._normalize_text(text)
+        if not text:
+            return ""
+
+        raw_words = text.split()
+        normalized_words = [
+            "".join(ch for ch in word.lower() if ch.isalnum())
+            for word in raw_words
+        ]
+
+        word_count = len(raw_words)
+        for chunk_len in range(word_count // 2, 0, -1):
+            if word_count % chunk_len != 0:
+                continue
+
+            repetition_count = word_count // chunk_len
+            if repetition_count < 2:
+                continue
+
+            first_chunk = normalized_words[:chunk_len]
+            if not first_chunk or any(not token for token in first_chunk):
+                continue
+
+            if all(
+                normalized_words[offset: offset + chunk_len] == first_chunk
+                for offset in range(chunk_len, word_count, chunk_len)
+            ):
+                return " ".join(raw_words[:chunk_len]).strip()
+
+        return text
 
     @staticmethod
     def _normalize_compare_text(text: str) -> str:

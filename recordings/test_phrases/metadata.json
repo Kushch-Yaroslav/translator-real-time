@@ -1,0 +1,58 @@
+[
+  {
+    "index": 1,
+    "text": "Hello everyone.",
+    "wav_path": "recordings/test_phrases/01.wav",
+    "duration_seconds": 4.5,
+    "lead_in_seconds": 1.5
+  },
+  {
+    "index": 2,
+    "text": "My name is Yaroslav.",
+    "wav_path": "recordings/test_phrases/02.wav",
+    "duration_seconds": 4.7,
+    "lead_in_seconds": 1.5
+  },
+  {
+    "index": 3,
+    "text": "I am from Ukraine and I am twenty six years old.",
+    "wav_path": "recordings/test_phrases/03.wav",
+    "duration_seconds": 8.55,
+    "lead_in_seconds": 1.5
+  },
+  {
+    "index": 4,
+    "text": "I work as a software engineer.",
+    "wav_path": "recordings/test_phrases/04.wav",
+    "duration_seconds": 5.800000000000001,
+    "lead_in_seconds": 1.5
+  },
+  {
+    "index": 5,
+    "text": "This is a test of the English to Russian translation pipeline.",
+    "wav_path": "recordings/test_phrases/05.wav",
+    "duration_seconds": 8.55,
+    "lead_in_seconds": 1.5
+  },
+  {
+    "index": 6,
+    "text": "Please translate my speech clearly and without long delays.",
+    "wav_path": "recordings/test_phrases/06.wav",
+    "duration_seconds": 7.45,
+    "lead_in_seconds": 1.5
+  },
+  {
+    "index": 7,
+    "text": "Short phrase.",
+    "wav_path": "recordings/test_phrases/07.wav",
+    "duration_seconds": 4.5,
+    "lead_in_seconds": 1.5
+  },
+  {
+    "index": 8,
+    "text": "This sentence is a little longer so we can test natural pacing and segmentation.",
+    "wav_path": "recordings/test_phrases/08.wav",
+    "duration_seconds": 10.200000000000001,
+    "lead_in_seconds": 1.5
+  }
+]
