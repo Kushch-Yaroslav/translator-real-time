@@ -22,6 +22,10 @@ from core.sst.nim_realtime_stt_service import (  # noqa: E402
     NIMRealtimeSTTConfig,
     NIMRealtimeSTTService,
 )
+from core.sst.riva_realtime_stt_service import (  # noqa: E402
+    RivaRealtimeSTTConfig,
+    RivaRealtimeSTTService,
+)
 from core.translation.translation_service import (  # noqa: E402
     TranslationConfig,
     TranslationDirection,
@@ -54,6 +58,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-json", default="recordings/test_phrases/evaluation.json")
     parser.add_argument("--stt-url", default="http://localhost:9000")
     parser.add_argument("--stt-ws-url", default="ws://localhost:9000/v1/realtime?intent=transcription")
+    parser.add_argument("--stt-backend", choices=("nim", "riva"), default="nim")
+    parser.add_argument("--riva-uri", default="localhost:50051")
     parser.add_argument("--tts-data-dir", default="/media/yaroslav/DATA/ai_models/piper")
     parser.add_argument("--silence-threshold", type=float, default=0.006)
     parser.add_argument("--padding-ms", type=float, default=120.0)
@@ -110,7 +116,14 @@ def similarity_score(expected: str, actual: str) -> float:
     return SequenceMatcher(None, normalize_text(expected), normalize_text(actual)).ratio()
 
 
-def transcribe_with_realtime_stt(audio: np.ndarray, samplerate: int, base_url: str, ws_url: str) -> str:
+def transcribe_with_realtime_stt(
+    audio: np.ndarray,
+    samplerate: int,
+    backend: str,
+    base_url: str,
+    ws_url: str,
+    riva_uri: str,
+) -> str:
     final_segments: list[str] = []
     done_event = threading.Event()
 
@@ -120,19 +133,32 @@ def transcribe_with_realtime_stt(audio: np.ndarray, samplerate: int, base_url: s
             final_segments.append(normalized)
         done_event.set()
 
-    service = NIMRealtimeSTTService(
-        NIMRealtimeSTTConfig(
-            base_url=base_url,
-            ws_url=ws_url,
-            language="en-US",
-            sample_rate_hz=16000,
-            num_channels=1,
-            timeout=10.0,
-            commit_interval_sec=0.35,
-            enable_automatic_punctuation=True,
-            on_log=None,
+    if backend == "riva":
+        service = RivaRealtimeSTTService(
+            RivaRealtimeSTTConfig(
+                uri=riva_uri,
+                language="en-US",
+                sample_rate_hz=16000,
+                num_channels=1,
+                timeout=10.0,
+                enable_automatic_punctuation=True,
+                on_log=None,
+            )
         )
-    )
+    else:
+        service = NIMRealtimeSTTService(
+            NIMRealtimeSTTConfig(
+                base_url=base_url,
+                ws_url=ws_url,
+                language="en-US",
+                sample_rate_hz=16000,
+                num_channels=1,
+                timeout=10.0,
+                commit_interval_sec=0.35,
+                enable_automatic_punctuation=True,
+                on_log=None,
+            )
+        )
 
     try:
         service.start(partial_callback=None, final_callback=on_final)
@@ -187,8 +213,10 @@ def main() -> int:
         recognized_text = transcribe_with_realtime_stt(
             trimmed_audio,
             samplerate=samplerate,
+            backend=args.stt_backend,
             base_url=args.stt_url,
             ws_url=args.stt_ws_url,
+            riva_uri=args.riva_uri,
         )
         stt_seconds = time.perf_counter() - stt_started
 

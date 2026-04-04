@@ -19,10 +19,8 @@ from core.audio_service import (
     move_app_recording_to_source,
 )
 from core.app_config import AppConfig, DEFAULT_CONFIG, TranslationBranchConfig, get_primary_branch_config
-from core.sst.nim_realtime_stt_service import (
-    NIMRealtimeSTTService,
-    NIMRealtimeSTTConfig,
-)
+from core.sst.realtime_stt_factory import create_realtime_stt_service
+from core.sst.realtime_stt_protocol import RealtimeSTTService
 from core.translation.translation_service import (
     TranslationService,
     TranslationConfig,
@@ -49,7 +47,7 @@ class AudioEngine:
         self.current_channels: int = 1
         self.current_blocksize: int = 1024
 
-        self.realtime_stt: Optional[NIMRealtimeSTTService] = None
+        self.realtime_stt: Optional[RealtimeSTTService] = None
         self.translation_service: Optional[TranslationService] = None
         self.tts_service: Optional[TTSService] = None
 
@@ -68,8 +66,11 @@ class AudioEngine:
         self._last_partial_text: str = ""
         self._last_partial_changed_at: float = 0.0
         self._last_partial_emitted_text: str = ""
+        self._stable_complete_sentences: list[str] = []
+        self._stable_complete_sentences_changed_at: float = 0.0
         self._partial_lock = threading.Lock()
         self._partial_promoted_since_last_final = False
+        self._emitted_complete_sentence_count: int = 0
         self._stt_speech_hangover_chunks = 0
         self._stt_speech_hangover_max_chunks = 1
 
@@ -151,22 +152,14 @@ class AudioEngine:
             f"(backend={self.tts_service.get_runtime_backend_label()})"
         )
 
-        self._log(
-            "Connecting realtime STT: NVIDIA NIM WebSocket "
-            f"({branch_config.stt_language}) ..."
+        self.realtime_stt, stt_backend_label = create_realtime_stt_service(
+            self.app_config,
+            branch_config,
+            on_log=self._log,
         )
-        self.realtime_stt = NIMRealtimeSTTService(
-            NIMRealtimeSTTConfig(
-                base_url=self.app_config.stt.base_url,
-                ws_url=self.app_config.stt.ws_url,
-                language=branch_config.stt_language,
-                sample_rate_hz=self.app_config.stt.sample_rate_hz,
-                num_channels=self.app_config.stt.num_channels,
-                timeout=self.app_config.stt.timeout,
-                commit_interval_sec=self.app_config.stt.commit_interval_sec,
-                enable_automatic_punctuation=self.app_config.stt.enable_automatic_punctuation,
-                on_log=self._log,
-            )
+        self._log(
+            f"Connecting realtime STT: {stt_backend_label} "
+            f"({branch_config.stt_language}) ..."
         )
         self.realtime_stt.start(
             partial_callback=self._on_realtime_partial,
@@ -335,6 +328,15 @@ class AudioEngine:
                 self._last_partial_text = text
                 self._last_partial_changed_at = time.monotonic()
 
+            if self._uses_sentence_partial_streaming():
+                complete_sentences, _ = self._split_sentences(text)
+                if (
+                    self._normalize_sentence_list(complete_sentences)
+                    != self._normalize_sentence_list(self._stable_complete_sentences)
+                ):
+                    self._stable_complete_sentences = complete_sentences
+                    self._stable_complete_sentences_changed_at = time.monotonic()
+
         self._last_stt_activity_at = now
         self._log(f"PARTIAL: {text}")
 
@@ -351,6 +353,12 @@ class AudioEngine:
         self._last_stt_activity_at = now
         if not text:
             self._log("FINAL: <empty>")
+            return
+
+        if self._uses_sentence_partial_streaming():
+            self.last_final_text = text
+            self._log(f"FINAL: {text}")
+            self._emit_sentence_stream_segments(text, is_final=True)
             return
 
         incremental_text = self._extract_incremental_text(self.last_emitted_source_text, text)
@@ -378,6 +386,11 @@ class AudioEngine:
 
     def _final_debounce_loop(self) -> None:
         while self.running:
+            if self._uses_sentence_partial_streaming():
+                self._maybe_emit_stable_partial()
+                time.sleep(0.05)
+                continue
+
             ready_text = ""
 
             with self._pending_final_lock:
@@ -557,7 +570,10 @@ class AudioEngine:
             self._last_partial_text = ""
             self._last_partial_changed_at = 0.0
             self._last_partial_emitted_text = ""
+            self._stable_complete_sentences = []
+            self._stable_complete_sentences_changed_at = 0.0
         self._partial_promoted_since_last_final = False
+        self._emitted_complete_sentence_count = 0
 
     def _reset_utterance_state(self) -> None:
         self.last_final_text = ""
@@ -600,7 +616,10 @@ class AudioEngine:
         normalized_incremental = self._normalize_compare_text(text)
         normalized_last_enqueued = self._normalize_compare_text(self.last_enqueued_final_text)
 
-        if normalized_incremental == normalized_last_enqueued:
+        if (
+            normalized_incremental == normalized_last_enqueued
+            and not self._uses_sentence_partial_streaming()
+        ):
             self._log("FINAL skipped: already queued")
             return
 
@@ -619,6 +638,10 @@ class AudioEngine:
         if not self.app_config.stt.partial_emit_enabled:
             return
 
+        if self._uses_sentence_partial_streaming():
+            self._maybe_emit_stable_partial_sentences()
+            return
+
         with self._partial_lock:
             partial_text = self._last_partial_text
             partial_changed_at = self._last_partial_changed_at
@@ -628,7 +651,7 @@ class AudioEngine:
             return
 
         age = time.monotonic() - partial_changed_at
-        if age < self.app_config.stt.partial_stability_sec:
+        if age < self._get_partial_stability_window_sec():
             return
 
         if len(partial_text.split()) < self.app_config.stt.partial_min_words:
@@ -638,6 +661,11 @@ class AudioEngine:
             return
 
         incremental_text = self._extract_incremental_text(self.last_emitted_source_text, partial_text)
+        incremental_text = self._normalize_text(incremental_text)
+        if not incremental_text:
+            return
+
+        incremental_text = self._extract_emittable_partial_text(incremental_text)
         incremental_text = self._normalize_text(incremental_text)
         if not incremental_text:
             return
@@ -652,20 +680,40 @@ class AudioEngine:
         self._stage_final_text(incremental_text, is_partial=True)
         self.last_emitted_source_text = self._merge_final_texts(
             self.last_emitted_source_text,
-            partial_text,
+            incremental_text,
         )
-        if self._get_active_branch_config().translation_direction == "ru_to_en":
+        if (
+            self._get_active_branch_config().translation_direction == "ru_to_en"
+            and not self._uses_sentence_partial_streaming()
+        ):
             self._partial_promoted_since_last_final = True
 
         with self._partial_lock:
             self._last_partial_emitted_text = partial_text
+
+    def _maybe_emit_stable_partial_sentences(self) -> None:
+        with self._partial_lock:
+            stable_complete_sentences = list(self._stable_complete_sentences)
+            stable_complete_sentences_changed_at = self._stable_complete_sentences_changed_at
+
+        if not stable_complete_sentences or stable_complete_sentences_changed_at <= 0.0:
+            return
+
+        age = time.monotonic() - stable_complete_sentences_changed_at
+        if age < self._get_partial_stability_window_sec():
+            return
+
+        self._emit_sentence_stream_segments(
+            " ".join(stable_complete_sentences).strip(),
+            is_final=False,
+        )
 
     def _should_emit_partial_text(self, partial_text: str, incremental_text: str) -> bool:
         branch_config = self._get_active_branch_config()
         if branch_config.translation_direction != "ru_to_en":
             return True
 
-        if self._partial_promoted_since_last_final:
+        if self._partial_promoted_since_last_final and not self._uses_sentence_partial_streaming():
             return False
 
         normalized_partial = self._normalize_text(partial_text)
@@ -677,7 +725,7 @@ class AudioEngine:
         if incremental_word_count < max(4, self.app_config.stt.partial_min_words):
             return False
 
-        if normalized_partial[-1] not in ".!?":
+        if normalized_incremental[-1] not in ".!?":
             return False
 
         partial_norm = self._normalize_compare_text(normalized_partial)
@@ -711,6 +759,156 @@ class AudioEngine:
             return False
 
         return True
+
+    def _extract_emittable_partial_text(self, incremental_text: str) -> str:
+        text = self._normalize_text(incremental_text)
+        if not text:
+            return ""
+
+        branch_config = self._get_active_branch_config()
+        if branch_config.translation_direction != "ru_to_en":
+            return text
+
+        backend = (self.app_config.stt.backend or "nim").strip().lower()
+        if backend != "riva":
+            return text
+
+        sentence_matches = list(re.finditer(r"[^.!?]+[.!?]", text))
+        if not sentence_matches:
+            return ""
+
+        candidate_match = sentence_matches[0]
+        candidate = candidate_match.group(0).strip()
+        if not candidate:
+            return ""
+
+        trailing_text = text[candidate_match.end():].strip()
+        complete_sentence_count = len(sentence_matches)
+        trailing_word_count = len(trailing_text.split())
+
+        if complete_sentence_count < 2 and trailing_word_count < 2:
+            return ""
+
+        candidate_tail_word = "".join(
+            ch for ch in candidate.split()[-1].lower() if ch.isalnum()
+        )
+        weak_sentence_tail_words = {
+            "меня",
+            "тебя",
+            "себя",
+            "его",
+            "ее",
+            "её",
+            "их",
+            "мой",
+            "моя",
+            "мое",
+            "моё",
+            "мои",
+            "наш",
+            "наша",
+            "наше",
+            "наши",
+            "этот",
+            "эта",
+            "это",
+            "эти",
+        }
+        if candidate_tail_word in weak_sentence_tail_words:
+            return ""
+
+        return candidate
+
+    def _uses_sentence_partial_streaming(self) -> bool:
+        branch_config = self._get_active_branch_config()
+        if branch_config.translation_direction != "ru_to_en":
+            return False
+
+        backend = (self.app_config.stt.backend or "nim").strip().lower()
+        return backend == "riva"
+
+    def _get_partial_stability_window_sec(self) -> float:
+        if self._uses_sentence_partial_streaming():
+            return max(0.35, self.app_config.stt.partial_stability_sec)
+        return self.app_config.stt.partial_stability_sec
+
+    def _emit_sentence_stream_segments(self, text: str, is_final: bool) -> None:
+        text = self._normalize_text(text)
+        if not text:
+            return
+
+        completed_sentences, trailing_fragment = self._split_sentences(text)
+        emitted_any = False
+
+        sentence_min_words = self._get_sentence_stream_min_words()
+        start_index = min(self._emitted_complete_sentence_count, len(completed_sentences))
+
+        for sentence in completed_sentences[start_index:]:
+            normalized_sentence = self._normalize_text(sentence)
+            self._emitted_complete_sentence_count += 1
+            if len(normalized_sentence.split()) < sentence_min_words:
+                continue
+
+            self._log(
+                f"{'FINAL' if is_final else 'PARTIAL'} sentence queued: {normalized_sentence}"
+            )
+            self._enqueue_final_text(normalized_sentence, source_text=normalized_sentence)
+            emitted_any = True
+
+        if is_final:
+            trailing_fragment = self._normalize_text(trailing_fragment)
+            if trailing_fragment:
+                trailing_norm = self._normalize_compare_text(trailing_fragment)
+                last_completed_norm = ""
+                if completed_sentences:
+                    last_completed_norm = self._normalize_compare_text(completed_sentences[-1])
+
+                if (
+                    trailing_norm
+                    and trailing_norm != last_completed_norm
+                    and trailing_norm != self._normalize_compare_text(self.last_enqueued_final_text)
+                    and len(trailing_fragment.split()) >= sentence_min_words
+                ):
+                    self._log(f"FINAL tail queued: {trailing_fragment}")
+                    self._enqueue_final_text(trailing_fragment, source_text=trailing_fragment)
+                    emitted_any = True
+
+        if not emitted_any:
+            self._log(
+                f"{'FINAL' if is_final else 'PARTIAL'} sentence stream: no new segments"
+            )
+
+    @staticmethod
+    def _split_sentences(text: str) -> tuple[list[str], str]:
+        text = AudioEngine._normalize_text(text)
+        if not text:
+            return [], ""
+
+        sentence_matches = list(re.finditer(r"[^.!?]+[.!?]", text))
+        completed_sentences = [
+            match.group(0).strip()
+            for match in sentence_matches
+            if match.group(0).strip()
+        ]
+
+        trailing_fragment = ""
+        if sentence_matches:
+            trailing_fragment = text[sentence_matches[-1].end():].strip()
+        else:
+            trailing_fragment = text
+
+        return completed_sentences, trailing_fragment
+
+    def _get_sentence_stream_min_words(self) -> int:
+        return max(4, self.app_config.stt.partial_min_words)
+
+    @staticmethod
+    def _normalize_sentence_list(sentences: list[str]) -> list[str]:
+        return [
+            AudioEngine._normalize_compare_text(sentence)
+            for sentence in sentences
+            if AudioEngine._normalize_compare_text(sentence)
+        ]
 
     def _get_partial_merge_window_sec(self) -> float:
         branch_config = self._get_active_branch_config()
@@ -769,6 +967,9 @@ class AudioEngine:
         return current
 
     def _should_skip_translated_text(self, text: str) -> bool:
+        if self._uses_sentence_partial_streaming():
+            return False
+
         previous = self._normalize_compare_text(self.last_translated_text)
         current = self._normalize_compare_text(text)
 

@@ -51,7 +51,7 @@ from core.audio_service import (
 from core.audio_utils import find_sounddevice_device_index_by_name
 from core.chunk_processor import ProcessingMode
 from core.file_logger import AppFileLogger
-from core.nim_runtime import ensure_nim_runtime_for_app_config
+from core.stt_runtime import ensure_stt_runtime_for_app_config
 
 
 class MainWindow(QWidget):
@@ -192,6 +192,9 @@ class MainWindow(QWidget):
         group = QGroupBox("Распознавание и сегментация")
         layout = QFormLayout(group)
 
+        self.stt_backend_combo = QComboBox()
+        self.stt_backend_combo.addItem("NVIDIA NIM", "nim")
+        self.stt_backend_combo.addItem("NVIDIA Riva", "riva")
         self.commit_interval_spin = self._build_double_spin(0.1, 2.0, 0.05, 2)
         self.final_debounce_spin = self._build_double_spin(0.1, 2.0, 0.05, 2)
         self.partial_stability_spin = self._build_double_spin(0.1, 2.0, 0.05, 2)
@@ -203,6 +206,7 @@ class MainWindow(QWidget):
         self.stt_window_combo.addItem("1.0 сек", 1.0)
         self.stt_window_combo.addItem("2.0 сек", 2.0)
 
+        layout.addRow("Backend STT:", self.stt_backend_combo)
         layout.addRow("Окно STT в UI:", self.stt_window_combo)
         layout.addRow("Интервал commit:", self.commit_interval_spin)
         layout.addRow("Ожидание final:", self.final_debounce_spin)
@@ -384,7 +388,7 @@ class MainWindow(QWidget):
         try:
             stt_window_seconds = float(self.stt_window_combo.currentData())
 
-            ensure_nim_runtime_for_app_config(self.app_config)
+            ensure_stt_runtime_for_app_config(self.app_config)
 
             self.engine.start(
                 input_device_index=input_index,
@@ -546,8 +550,12 @@ class MainWindow(QWidget):
                 blocksize=int(self.blocksize_spin.value()),
             ),
             stt=STTConfig(
+                backend=str(self.stt_backend_combo.currentData()),
                 base_url=self.app_config.stt.base_url,
                 ws_url=self.app_config.stt.ws_url,
+                riva_uri=self.app_config.stt.riva_uri,
+                riva_use_ssl=self.app_config.stt.riva_use_ssl,
+                riva_ssl_cert_path=self.app_config.stt.riva_ssl_cert_path,
                 language=self.app_config.stt.language,
                 sample_rate_hz=self.app_config.stt.sample_rate_hz,
                 num_channels=self.app_config.stt.num_channels,
@@ -592,6 +600,7 @@ class MainWindow(QWidget):
         self._set_combo_data(self.translation_direction_combo, primary_branch.translation_direction)
         self.translation_enabled_checkbox.setChecked(primary_branch.enabled)
         self.partial_emit_checkbox.setChecked(config.stt.partial_emit_enabled)
+        self._set_combo_data(self.stt_backend_combo, config.stt.backend)
 
         self.commit_interval_spin.setValue(config.stt.commit_interval_sec)
         self.final_debounce_spin.setValue(config.stt.final_debounce_sec)

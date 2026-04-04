@@ -18,8 +18,12 @@ class AudioConfig:
 
 @dataclass
 class STTConfig:
+    backend: str = "nim"
     base_url: str = "http://localhost:9000"
     ws_url: str = "ws://localhost:9000/v1/realtime?intent=transcription"
+    riva_uri: str = "localhost:50051"
+    riva_use_ssl: bool = False
+    riva_ssl_cert_path: str = ""
     language: str = "en-US"
     sample_rate_hz: int = 16000
     num_channels: int = 1
