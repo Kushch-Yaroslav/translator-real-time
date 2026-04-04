@@ -1,9 +1,9 @@
 {
   "summary": {
     "count": 7,
-    "avg_stt_seconds": 0.4447745715718026,
-    "avg_translation_seconds": 0.11185025285755858,
-    "avg_tts_seconds": 0.18492941642866104,
+    "avg_stt_seconds": 0.44643351242822454,
+    "avg_translation_seconds": 0.10909200171382898,
+    "avg_tts_seconds": 0.17947619314301327,
     "avg_stt_similarity": 0.9961215255332903,
     "tts_backend": "cuda",
     "tts_voice_name": "en_US-lessac-medium"
@@ -17,10 +17,10 @@
       "wav_path": "recordings/test_phrases_ru_to_en/01.wav",
       "raw_audio_seconds": 4.9,
       "trimmed_audio_seconds": 2.43,
-      "stt_seconds": 0.3256038850013283,
-      "translation_seconds": 0.37332459000026574,
-      "tts_seconds": 0.4705138320005062,
-      "tts_audio_seconds": 1.8575833333333334,
+      "stt_seconds": 0.35270397199928993,
+      "translation_seconds": 0.3760837320005521,
+      "tts_seconds": 0.4259974249998777,
+      "tts_audio_seconds": 1.8691875,
       "stt_similarity": 1.0
     },
     {
@@ -31,10 +31,10 @@
       "wav_path": "recordings/test_phrases_ru_to_en/02.wav",
       "raw_audio_seconds": 7.3,
       "trimmed_audio_seconds": 3.54,
-      "stt_seconds": 0.46298892999948293,
-      "translation_seconds": 0.10017956699994102,
-      "tts_seconds": 0.1482709440006147,
-      "tts_audio_seconds": 2.600625,
+      "stt_seconds": 0.4543657539998094,
+      "translation_seconds": 0.09087942499900237,
+      "tts_seconds": 0.14379101099984837,
+      "tts_audio_seconds": 2.472916666666667,
       "stt_similarity": 1.0
     },
     {
@@ -45,10 +45,10 @@
       "wav_path": "recordings/test_phrases_ru_to_en/03.wav",
       "raw_audio_seconds": 4.7,
       "trimmed_audio_seconds": 2.7,
-      "stt_seconds": 0.34926916699987487,
-      "translation_seconds": 0.052611101000366034,
-      "tts_seconds": 0.13098245299988776,
-      "tts_audio_seconds": 1.8575833333333334,
+      "stt_seconds": 0.33932571100012865,
+      "translation_seconds": 0.05305219599904376,
+      "tts_seconds": 0.13688747699961823,
+      "tts_audio_seconds": 1.9968958333333333,
       "stt_similarity": 0.9846153846153847
     },
     {
@@ -59,10 +59,10 @@
       "wav_path": "recordings/test_phrases_ru_to_en/04.wav",
       "raw_audio_seconds": 6.1,
       "trimmed_audio_seconds": 3.57,
-      "stt_seconds": 0.47322646800057555,
-      "translation_seconds": 0.06574398700104211,
-      "tts_seconds": 0.13698372500039113,
-      "tts_audio_seconds": 2.438083333333333,
+      "stt_seconds": 0.48540050700103166,
+      "translation_seconds": 0.06542581000030623,
+      "tts_seconds": 0.1353153790005308,
+      "tts_audio_seconds": 2.4613125,
       "stt_similarity": 0.9882352941176471
     },
     {
@@ -73,10 +73,10 @@
       "wav_path": "recordings/test_phrases_ru_to_en/05.wav",
       "raw_audio_seconds": 7.9,
       "trimmed_audio_seconds": 4.14,
-      "stt_seconds": 0.5320228820000921,
-      "translation_seconds": 0.0672381040003529,
-      "tts_seconds": 0.1369507359995623,
-      "tts_audio_seconds": 3.3320625,
+      "stt_seconds": 0.514674964999358,
+      "translation_seconds": 0.07275385399952938,
+      "tts_seconds": 0.14724527399994258,
+      "tts_audio_seconds": 3.274,
       "stt_similarity": 1.0
     },
     {
@@ -87,10 +87,10 @@
       "wav_path": "recordings/test_phrases_ru_to_en/06.wav",
       "raw_audio_seconds": 4.7,
       "trimmed_audio_seconds": 1.56,
-      "stt_seconds": 0.19788108700049634,
-      "translation_seconds": 0.0276367990009021,
-      "tts_seconds": 0.1344306589999178,
-      "tts_audio_seconds": 0.9868333333333333,
+      "stt_seconds": 0.18869308399916918,
+      "translation_seconds": 0.02832364999994752,
+      "tts_seconds": 0.13294830400081992,
+      "tts_audio_seconds": 0.9055625,
       "stt_similarity": 1.0
     },
     {
@@ -101,10 +101,10 @@
       "wav_path": "recordings/test_phrases_ru_to_en/07.wav",
       "raw_audio_seconds": 7.9,
       "trimmed_audio_seconds": 6.33,
-      "stt_seconds": 0.7724295820007683,
-      "translation_seconds": 0.09621762200004014,
-      "tts_seconds": 0.13637356599974737,
-      "tts_audio_seconds": 3.657125,
+      "stt_seconds": 0.7898705939987849,
+      "translation_seconds": 0.0771253449984215,
+      "tts_seconds": 0.13414848200045526,
+      "tts_audio_seconds": 3.5874791666666668,
       "stt_similarity": 1.0
     }
   ]
