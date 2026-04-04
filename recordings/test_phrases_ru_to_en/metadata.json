@@ -1,0 +1,51 @@
+[
+  {
+    "index": 1,
+    "text": "Привет, меня зовут Ярослав.",
+    "wav_path": "recordings/test_phrases_ru_to_en/01.wav",
+    "duration_seconds": 4.9,
+    "lead_in_seconds": 1.5
+  },
+  {
+    "index": 2,
+    "text": "Я из Украины, и мне двадцать шесть лет.",
+    "wav_path": "recordings/test_phrases_ru_to_en/02.wav",
+    "duration_seconds": 7.3,
+    "lead_in_seconds": 1.5
+  },
+  {
+    "index": 3,
+    "text": "Я работаю инженером-программистом.",
+    "wav_path": "recordings/test_phrases_ru_to_en/03.wav",
+    "duration_seconds": 4.7,
+    "lead_in_seconds": 1.5
+  },
+  {
+    "index": 4,
+    "text": "Это тест русского в английский переводчика.",
+    "wav_path": "recordings/test_phrases_ru_to_en/04.wav",
+    "duration_seconds": 6.1,
+    "lead_in_seconds": 1.5
+  },
+  {
+    "index": 5,
+    "text": "Пожалуйста, переведи мою речь четко и без большой задержки.",
+    "wav_path": "recordings/test_phrases_ru_to_en/05.wav",
+    "duration_seconds": 7.8999999999999995,
+    "lead_in_seconds": 1.5
+  },
+  {
+    "index": 6,
+    "text": "Короткая фраза.",
+    "wav_path": "recordings/test_phrases_ru_to_en/06.wav",
+    "duration_seconds": 4.7,
+    "lead_in_seconds": 1.5
+  },
+  {
+    "index": 7,
+    "text": "Это предложение длиннее, чтобы проверить естественный темп и сегментацию.",
+    "wav_path": "recordings/test_phrases_ru_to_en/07.wav",
+    "duration_seconds": 7.8999999999999995,
+    "lead_in_seconds": 1.5
+  }
+]

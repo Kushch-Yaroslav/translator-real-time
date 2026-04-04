@@ -41,6 +41,25 @@ class TranslationRuntimeConfig:
 
 
 @dataclass
+class TranslationBranchConfig:
+    branch_id: str = "primary"
+    label: str = "EN -> RU"
+    enabled: bool = True
+    stt_language: str = "en-US"
+    translation_direction: str = "en_to_ru"
+    tts_voice_name: str = "ru_RU-dmitri-medium"
+    nim_container_id: str = "parakeet-1-1b-ctc-en-us"
+    nim_tags_selector: str = "name=parakeet-1-1b-ctc-en-us,mode=str,diarizer=disabled,vad=default"
+    nim_startup_timeout_sec: float = 60.0
+
+
+@dataclass
+class BranchesConfig:
+    primary: TranslationBranchConfig
+    secondary: TranslationBranchConfig
+
+
+@dataclass
 class AppRuntimeConfig:
     conversation_mode: str = "all"
 
@@ -58,6 +77,7 @@ class AppConfig:
     runtime: AppRuntimeConfig
     audio: AudioConfig
     stt: STTConfig
+    branches: BranchesConfig
     translation: TranslationRuntimeConfig
     tts: TTSRuntimeConfig
 
@@ -66,6 +86,20 @@ DEFAULT_CONFIG = AppConfig(
     runtime=AppRuntimeConfig(),
     audio=AudioConfig(),
     stt=STTConfig(),
+    branches=BranchesConfig(
+        primary=TranslationBranchConfig(),
+        secondary=TranslationBranchConfig(
+            branch_id="secondary",
+            label="RU -> EN",
+            enabled=False,
+            stt_language="ru-RU",
+            translation_direction="ru_to_en",
+            tts_voice_name="en_US-lessac-medium",
+            nim_container_id="parakeet-1-1b-rnnt-multilingual",
+            nim_tags_selector="mode=str",
+            nim_startup_timeout_sec=180.0,
+        ),
+    ),
     translation=TranslationRuntimeConfig(),
     tts=TTSRuntimeConfig(),
 )
@@ -85,12 +119,37 @@ def load_app_config(path: str | Path | None = None) -> AppConfig:
         return DEFAULT_CONFIG
 
     payload = json.loads(config_path.read_text(encoding="utf-8"))
+    stt_config = _load_section(STTConfig, payload.get("stt"))
+    translation_config = _load_section(TranslationRuntimeConfig, payload.get("translation"))
+    tts_config = _load_section(TTSRuntimeConfig, payload.get("tts"))
+
+    branches_payload = payload.get("branches") or {}
+    primary_branch = _load_section(
+        TranslationBranchConfig,
+        branches_payload.get("primary") or {
+            "branch_id": "primary",
+            "label": _resolve_branch_label(translation_config.direction),
+            "enabled": translation_config.enabled,
+            "stt_language": stt_config.language,
+            "translation_direction": translation_config.direction,
+            "tts_voice_name": tts_config.voice_name,
+        },
+    )
+    secondary_branch = _load_section(
+        TranslationBranchConfig,
+        branches_payload.get("secondary") or asdict(DEFAULT_CONFIG.branches.secondary),
+    )
+
     return AppConfig(
         runtime=_load_section(AppRuntimeConfig, payload.get("runtime")),
         audio=_load_section(AudioConfig, payload.get("audio")),
-        stt=_load_section(STTConfig, payload.get("stt")),
-        translation=_load_section(TranslationRuntimeConfig, payload.get("translation")),
-        tts=_load_section(TTSRuntimeConfig, payload.get("tts")),
+        stt=stt_config,
+        branches=BranchesConfig(
+            primary=primary_branch,
+            secondary=secondary_branch,
+        ),
+        translation=translation_config,
+        tts=tts_config,
     )
 
 
@@ -110,6 +169,16 @@ def list_profile_paths() -> list[Path]:
         return []
 
     return sorted(profiles_dir.glob("*.json"))
+
+
+def get_primary_branch_config(config: AppConfig) -> TranslationBranchConfig:
+    return config.branches.primary
+
+
+def _resolve_branch_label(direction: str) -> str:
+    if direction == "ru_to_en":
+        return "RU -> EN"
+    return "EN -> RU"
 
 
 def _load_section(section_type: Type[T], payload: Any) -> T:

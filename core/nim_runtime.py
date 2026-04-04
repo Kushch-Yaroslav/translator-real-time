@@ -9,6 +9,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.app_config import AppConfig, TranslationBranchConfig, get_primary_branch_config, load_app_config
+
 
 DEFAULT_CONTAINER_ID = "parakeet-1-1b-ctc-en-us"
 DEFAULT_NIM_TAGS_SELECTOR = "name=parakeet-1-1b-ctc-en-us,mode=str,diarizer=disabled,vad=default"
@@ -34,10 +36,18 @@ class NIMRuntimeConfig:
 def ensure_nim_runtime(config: NIMRuntimeConfig | None = None) -> None:
     config = config or NIMRuntimeConfig()
 
-    if _is_nim_http_ready(config.http_port):
+    docker_prefix = _resolve_docker_prefix()
+
+    if _is_container_running(docker_prefix, config.container_id) and _is_nim_http_ready(config.http_port):
         return
 
-    docker_prefix = _resolve_docker_prefix()
+    if _is_nim_http_ready(config.http_port):
+        raise RuntimeError(
+            f"На порту {config.http_port} уже отвечает другой NIM или другой сервис. "
+            f"Автоматическая замена контейнера отключена. "
+            f"Останови старый контейнер вручную и перезапусти приложение."
+        )
+
     if _is_container_running(docker_prefix, config.container_id):
         _wait_until_ready(config)
         return
@@ -51,6 +61,20 @@ def ensure_nim_runtime(config: NIMRuntimeConfig | None = None) -> None:
     _remove_container_if_exists(docker_prefix, config.container_id)
     _start_container(docker_prefix, config, ngc_api_key)
     _wait_until_ready(config)
+
+
+def ensure_nim_runtime_for_app_config(app_config: AppConfig | None = None) -> None:
+    app_config = app_config or load_app_config()
+    branch_config = get_primary_branch_config(app_config)
+    ensure_nim_runtime(config_from_branch(branch_config))
+
+
+def config_from_branch(branch_config: TranslationBranchConfig) -> NIMRuntimeConfig:
+    return NIMRuntimeConfig(
+        container_id=branch_config.nim_container_id,
+        nim_tags_selector=branch_config.nim_tags_selector,
+        startup_timeout_sec=branch_config.nim_startup_timeout_sec,
+    )
 
 
 def _resolve_ngc_api_key(env_file: Path) -> str:

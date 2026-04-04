@@ -23,8 +23,32 @@
     "noise_gate_threshold": 0.009,
     "noise_gate_hangover_sec": 0.35
   },
+  "branches": {
+    "primary": {
+      "branch_id": "primary",
+      "label": "RU -> EN",
+      "enabled": true,
+      "stt_language": "ru-RU",
+      "translation_direction": "ru_to_en",
+      "tts_voice_name": "ru_RU-dmitri-medium",
+      "nim_container_id": "parakeet-1-1b-rnnt-multilingual",
+      "nim_tags_selector": "mode=str",
+      "nim_startup_timeout_sec": 60.0
+    },
+    "secondary": {
+      "branch_id": "secondary",
+      "label": "RU -> EN",
+      "enabled": false,
+      "stt_language": "ru-RU",
+      "translation_direction": "ru_to_en",
+      "tts_voice_name": "en_US-lessac-medium",
+      "nim_container_id": "parakeet-1-1b-rnnt-multilingual",
+      "nim_tags_selector": "mode=str",
+      "nim_startup_timeout_sec": 180.0
+    }
+  },
   "translation": {
-    "direction": "en_to_ru",
+    "direction": "ru_to_en",
     "enabled": true
   },
   "tts": {

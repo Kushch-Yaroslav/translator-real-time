@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import queue
+import re
 import time
 from typing import Optional, Callable
 
@@ -17,7 +18,7 @@ from core.audio_service import (
     move_app_playback_to_sink,
     move_app_recording_to_source,
 )
-from core.app_config import AppConfig, DEFAULT_CONFIG
+from core.app_config import AppConfig, DEFAULT_CONFIG, TranslationBranchConfig, get_primary_branch_config
 from core.sst.nim_realtime_stt_service import (
     NIMRealtimeSTTService,
     NIMRealtimeSTTConfig,
@@ -111,6 +112,8 @@ class AudioEngine:
         self._clear_pending_final()
         self._clear_partial_state()
 
+        branch_config = self._get_active_branch_config()
+
         self.processor = ChunkProcessor(
             ChunkProcessorConfig(
                 samplerate=samplerate,
@@ -118,20 +121,19 @@ class AudioEngine:
             )
         )
 
-        self._log("Loading translation model: EN->RU ...")
-        translation_direction = self._resolve_translation_direction()
+        self._log(f"Loading translation model: {branch_config.label} ...")
         self.translation_service = TranslationService(
             TranslationConfig(
-                direction=translation_direction,
-                enabled=self.app_config.translation.enabled,
+                direction=self._resolve_translation_direction(branch_config),
+                enabled=branch_config.enabled,
             )
         )
         self._log("Translation model loaded")
 
-        self._log("Loading TTS voice: ru_RU-dmitri-medium ...")
+        self._log(f"Loading TTS voice: {branch_config.tts_voice_name} ...")
         self.tts_service = TTSService(
             TTSConfig(
-                voice_name=self.app_config.tts.voice_name,
+                voice_name=branch_config.tts_voice_name,
                 data_dir=self.app_config.tts.data_dir,
                 use_cuda=self.app_config.tts.use_cuda,
             )
@@ -141,12 +143,15 @@ class AudioEngine:
             f"(backend={self.tts_service.get_runtime_backend_label()})"
         )
 
-        self._log("Connecting realtime STT: NVIDIA NIM WebSocket (en-US) ...")
+        self._log(
+            "Connecting realtime STT: NVIDIA NIM WebSocket "
+            f"({branch_config.stt_language}) ..."
+        )
         self.realtime_stt = NIMRealtimeSTTService(
             NIMRealtimeSTTConfig(
                 base_url=self.app_config.stt.base_url,
                 ws_url=self.app_config.stt.ws_url,
-                language=self.app_config.stt.language,
+                language=branch_config.stt_language,
                 sample_rate_hz=self.app_config.stt.sample_rate_hz,
                 num_channels=self.app_config.stt.num_channels,
                 timeout=self.app_config.stt.timeout,
@@ -201,7 +206,7 @@ class AudioEngine:
         self._log(
             "AudioEngine started | "
             f"samplerate={samplerate}, channels={channels}, blocksize={blocksize}, "
-            "pipeline=realtime EN->RU"
+            f"pipeline=realtime {branch_config.label}"
         )
 
     def stop(self) -> None:
@@ -673,6 +678,8 @@ class AudioEngine:
         if not text:
             return ""
 
+        text = AudioEngine._collapse_repeated_sentences(text)
+
         raw_words = text.split()
         normalized_words = [
             "".join(ch for ch in word.lower() if ch.isalnum())
@@ -697,6 +704,34 @@ class AudioEngine:
                 for offset in range(chunk_len, word_count, chunk_len)
             ):
                 return " ".join(raw_words[:chunk_len]).strip()
+
+        return text
+
+    @staticmethod
+    def _collapse_repeated_sentences(text: str) -> str:
+        sentence_pattern = re.compile(r"[^.!?]+[.!?]?")
+        raw_sentences = [segment.strip() for segment in sentence_pattern.findall(text) if segment.strip()]
+
+        if len(raw_sentences) < 2:
+            return text
+
+        collapsed_sentences: list[str] = []
+        last_norm = ""
+
+        for sentence in raw_sentences:
+            sentence_norm = AudioEngine._normalize_compare_text(sentence)
+            if not sentence_norm:
+                continue
+
+            if sentence_norm == last_norm:
+                continue
+
+            collapsed_sentences.append(sentence)
+            last_norm = sentence_norm
+
+        collapsed_text = " ".join(collapsed_sentences).strip()
+        if collapsed_text:
+            return collapsed_text
 
         return text
 
@@ -747,8 +782,11 @@ class AudioEngine:
         else:
             self._log(message)
 
-    def _resolve_translation_direction(self) -> TranslationDirection:
-        direction = (self.app_config.translation.direction or "").strip().lower()
+    def _get_active_branch_config(self) -> TranslationBranchConfig:
+        return get_primary_branch_config(self.app_config)
+
+    def _resolve_translation_direction(self, branch_config: TranslationBranchConfig) -> TranslationDirection:
+        direction = (branch_config.translation_direction or "").strip().lower()
         if direction == TranslationDirection.RU_TO_EN.value:
             return TranslationDirection.RU_TO_EN
         return TranslationDirection.EN_TO_RU

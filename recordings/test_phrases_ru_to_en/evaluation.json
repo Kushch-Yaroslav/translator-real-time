@@ -1,0 +1,111 @@
+{
+  "summary": {
+    "count": 7,
+    "avg_stt_seconds": 0.44697270300041836,
+    "avg_translation_seconds": 0.11260508457105191,
+    "avg_tts_seconds": 0.18124700599998636,
+    "avg_stt_similarity": 0.9961215255332903,
+    "tts_backend": "cuda",
+    "tts_voice_name": "en_US-lessac-medium"
+  },
+  "items": [
+    {
+      "index": 1,
+      "expected_text": "Привет, меня зовут Ярослав.",
+      "recognized_text": "Привет, меня зовут Ярослав.",
+      "translated_text": "Hi, my name is Jaroslav.",
+      "wav_path": "recordings/test_phrases_ru_to_en/01.wav",
+      "raw_audio_seconds": 4.9,
+      "trimmed_audio_seconds": 2.43,
+      "stt_seconds": 0.3343778039998142,
+      "translation_seconds": 0.36636701799943694,
+      "tts_seconds": 0.44766897299996344,
+      "tts_audio_seconds": 1.7995416666666666,
+      "stt_similarity": 1.0
+    },
+    {
+      "index": 2,
+      "expected_text": "Я из Украины, и мне двадцать шесть лет.",
+      "recognized_text": "Я из Украины и мне двадцать шесть лет.",
+      "translated_text": "I'm from Ukraine and I'm twenty-six years old.",
+      "wav_path": "recordings/test_phrases_ru_to_en/02.wav",
+      "raw_audio_seconds": 7.3,
+      "trimmed_audio_seconds": 3.54,
+      "stt_seconds": 0.46491655400132004,
+      "translation_seconds": 0.09493033900071168,
+      "tts_seconds": 0.14974022099886497,
+      "tts_audio_seconds": 2.5773958333333336,
+      "stt_similarity": 1.0
+    },
+    {
+      "index": 3,
+      "expected_text": "Я работаю инженером-программистом.",
+      "recognized_text": "Я работаю инженером программистом.",
+      "translated_text": "I work as a programmer engineer.",
+      "wav_path": "recordings/test_phrases_ru_to_en/03.wav",
+      "raw_audio_seconds": 4.7,
+      "trimmed_audio_seconds": 2.7,
+      "stt_seconds": 0.3612339179999253,
+      "translation_seconds": 0.06277049699929194,
+      "tts_seconds": 0.13240929899984621,
+      "tts_audio_seconds": 2.0549583333333334,
+      "stt_similarity": 0.9846153846153847
+    },
+    {
+      "index": 4,
+      "expected_text": "Это тест русского в английский переводчика.",
+      "recognized_text": "Это текст русского в английский переводчика.",
+      "translated_text": "It's a Russian text to an English translator.",
+      "wav_path": "recordings/test_phrases_ru_to_en/04.wav",
+      "raw_audio_seconds": 6.1,
+      "trimmed_audio_seconds": 3.57,
+      "stt_seconds": 0.481565894000596,
+      "translation_seconds": 0.06896091299859108,
+      "tts_seconds": 0.13144082899998466,
+      "tts_audio_seconds": 2.40325,
+      "stt_similarity": 0.9882352941176471
+    },
+    {
+      "index": 5,
+      "expected_text": "Пожалуйста, переведи мою речь четко и без большой задержки.",
+      "recognized_text": "Пожалуйста, переведи мою речь четко и без большой задержки.",
+      "translated_text": "Please translate my speech clearly and without much delay.",
+      "wav_path": "recordings/test_phrases_ru_to_en/05.wav",
+      "raw_audio_seconds": 7.9,
+      "trimmed_audio_seconds": 4.14,
+      "stt_seconds": 0.5287977469997713,
+      "translation_seconds": 0.07078824199925293,
+      "tts_seconds": 0.14309213300111878,
+      "tts_audio_seconds": 3.4249375,
+      "stt_similarity": 1.0
+    },
+    {
+      "index": 6,
+      "expected_text": "Короткая фраза.",
+      "recognized_text": "Короткая фраза",
+      "translated_text": "Short sentence",
+      "wav_path": "recordings/test_phrases_ru_to_en/06.wav",
+      "raw_audio_seconds": 4.7,
+      "trimmed_audio_seconds": 1.56,
+      "stt_seconds": 0.19965347300058056,
+      "translation_seconds": 0.026708205999966594,
+      "tts_seconds": 0.13075917899914202,
+      "tts_audio_seconds": 0.9752291666666667,
+      "stt_similarity": 1.0
+    },
+    {
+      "index": 7,
+      "expected_text": "Это предложение длиннее, чтобы проверить естественный темп и сегментацию.",
+      "recognized_text": "Это предложение длиннее, чтобы проверить естественный темп и сегментацию.",
+      "translated_text": "This sentence is longer to check the natural pace and segmentation.",
+      "wav_path": "recordings/test_phrases_ru_to_en/07.wav",
+      "raw_audio_seconds": 7.9,
+      "trimmed_audio_seconds": 6.33,
+      "stt_seconds": 0.7582635310009209,
+      "translation_seconds": 0.0977103770001122,
+      "tts_seconds": 0.13361840800098435,
+      "tts_audio_seconds": 3.5178125,
+      "stt_similarity": 1.0
+    }
+  ]
+}

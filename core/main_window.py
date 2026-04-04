@@ -27,10 +27,13 @@ from core.app_config import (
     AppConfig,
     AppRuntimeConfig,
     AudioConfig,
+    BranchesConfig,
     STTConfig,
     TTSRuntimeConfig,
+    TranslationBranchConfig,
     TranslationRuntimeConfig,
     get_default_config_path,
+    get_primary_branch_config,
     get_profiles_dir,
     list_profile_paths,
     load_app_config,
@@ -48,6 +51,7 @@ from core.audio_service import (
 from core.audio_utils import find_sounddevice_device_index_by_name
 from core.chunk_processor import ProcessingMode
 from core.file_logger import AppFileLogger
+from core.nim_runtime import ensure_nim_runtime_for_app_config
 
 
 class MainWindow(QWidget):
@@ -380,6 +384,8 @@ class MainWindow(QWidget):
         try:
             stt_window_seconds = float(self.stt_window_combo.currentData())
 
+            ensure_nim_runtime_for_app_config(self.app_config)
+
             self.engine.start(
                 input_device_index=input_index,
                 output_device_index=output_index,
@@ -555,6 +561,19 @@ class MainWindow(QWidget):
                 noise_gate_threshold=float(self.noise_gate_threshold_spin.value()),
                 noise_gate_hangover_sec=float(self.noise_gate_hangover_spin.value()),
             ),
+            branches=BranchesConfig(
+                primary=TranslationBranchConfig(
+                    branch_id="primary",
+                    label=self._resolve_branch_label(str(self.translation_direction_combo.currentData())),
+                    enabled=bool(self.translation_enabled_checkbox.isChecked()),
+                    stt_language=self._resolve_stt_language(str(self.translation_direction_combo.currentData())),
+                    translation_direction=str(self.translation_direction_combo.currentData()),
+                    tts_voice_name=str(self.voice_combo.currentData()),
+                    nim_container_id=self._resolve_nim_container_id(str(self.translation_direction_combo.currentData())),
+                    nim_tags_selector=self._resolve_nim_tags_selector(str(self.translation_direction_combo.currentData())),
+                ),
+                secondary=self.app_config.branches.secondary,
+            ),
             translation=TranslationRuntimeConfig(
                 direction=str(self.translation_direction_combo.currentData()),
                 enabled=bool(self.translation_enabled_checkbox.isChecked()),
@@ -568,9 +587,10 @@ class MainWindow(QWidget):
         )
 
     def _apply_config_to_ui(self, config: AppConfig) -> None:
+        primary_branch = get_primary_branch_config(config)
         self._set_combo_data(self.conversation_mode_combo, config.runtime.conversation_mode)
-        self._set_combo_data(self.translation_direction_combo, config.translation.direction)
-        self.translation_enabled_checkbox.setChecked(config.translation.enabled)
+        self._set_combo_data(self.translation_direction_combo, primary_branch.translation_direction)
+        self.translation_enabled_checkbox.setChecked(primary_branch.enabled)
         self.partial_emit_checkbox.setChecked(config.stt.partial_emit_enabled)
 
         self.commit_interval_spin.setValue(config.stt.commit_interval_sec)
@@ -580,7 +600,7 @@ class MainWindow(QWidget):
         self.noise_gate_threshold_spin.setValue(config.stt.noise_gate_threshold)
         self.noise_gate_hangover_spin.setValue(config.stt.noise_gate_hangover_sec)
 
-        self._set_combo_data(self.voice_combo, config.tts.voice_name)
+        self._set_combo_data(self.voice_combo, primary_branch.tts_voice_name)
         self.max_queue_latency_spin.setValue(config.tts.max_queue_latency_sec)
 
         self.samplerate_spin.setValue(config.audio.samplerate)
@@ -641,6 +661,30 @@ class MainWindow(QWidget):
         index = combo.findData(value)
         if index >= 0:
             combo.setCurrentIndex(index)
+
+    @staticmethod
+    def _resolve_stt_language(direction: str) -> str:
+        if direction == "ru_to_en":
+            return "ru-RU"
+        return "en-US"
+
+    @staticmethod
+    def _resolve_branch_label(direction: str) -> str:
+        if direction == "ru_to_en":
+            return "RU -> EN"
+        return "EN -> RU"
+
+    @staticmethod
+    def _resolve_nim_container_id(direction: str) -> str:
+        if direction == "ru_to_en":
+            return "parakeet-1-1b-rnnt-multilingual"
+        return "parakeet-1-1b-ctc-en-us"
+
+    @staticmethod
+    def _resolve_nim_tags_selector(direction: str) -> str:
+        if direction == "ru_to_en":
+            return "mode=str"
+        return "name=parakeet-1-1b-ctc-en-us,mode=str,diarizer=disabled,vad=default"
 
     @staticmethod
     def _format_device_label(device: AudioDevice) -> str:
