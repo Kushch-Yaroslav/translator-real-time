@@ -1,5 +1,10 @@
 .venv
 .idea
+__pycache__/
+*.pyc
 test.wav
 .env
 logs
+recordings/test_phrases/
+recordings/test_phrases_ru_to_en/
+tmp/

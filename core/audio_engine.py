@@ -56,15 +56,20 @@ class AudioEngine:
         self.last_final_text: str = ""
         self.last_translated_text: str = ""
         self.last_enqueued_final_text: str = ""
+        self.last_emitted_source_text: str = ""
+        self.last_translated_at: float = 0.0
+        self._last_stt_activity_at: float = 0.0
 
         self.final_text_queue: queue.Queue[str] = queue.Queue(maxsize=32)
         self._pending_final_text: str = ""
         self._pending_final_updated_at: float = 0.0
+        self._pending_final_is_partial: bool = False
         self._pending_final_lock = threading.Lock()
         self._last_partial_text: str = ""
         self._last_partial_changed_at: float = 0.0
         self._last_partial_emitted_text: str = ""
         self._partial_lock = threading.Lock()
+        self._partial_promoted_since_last_final = False
         self._stt_speech_hangover_chunks = 0
         self._stt_speech_hangover_max_chunks = 1
 
@@ -108,6 +113,9 @@ class AudioEngine:
         self.last_final_text = ""
         self.last_translated_text = ""
         self.last_enqueued_final_text = ""
+        self.last_emitted_source_text = ""
+        self.last_translated_at = 0.0
+        self._last_stt_activity_at = 0.0
         self._clear_final_text_queue()
         self._clear_pending_final()
         self._clear_partial_state()
@@ -252,6 +260,9 @@ class AudioEngine:
         self.last_final_text = ""
         self.last_translated_text = ""
         self.last_enqueued_final_text = ""
+        self.last_emitted_source_text = ""
+        self.last_translated_at = 0.0
+        self._last_stt_activity_at = 0.0
         self._clear_final_text_queue()
         self._clear_pending_final()
         self._clear_partial_state()
@@ -311,6 +322,10 @@ class AudioEngine:
     def _on_realtime_partial(self, text: str) -> None:
         if not text:
             return
+
+        now = time.monotonic()
+        self._maybe_reset_utterance_state(now)
+
         text = self._normalize_text(text)
         if not text:
             return
@@ -320,21 +335,28 @@ class AudioEngine:
                 self._last_partial_text = text
                 self._last_partial_changed_at = time.monotonic()
 
+        self._last_stt_activity_at = now
         self._log(f"PARTIAL: {text}")
 
     def _on_realtime_final(self, text: str) -> None:
         if not self.running:
             return
 
+        now = time.monotonic()
+        self._maybe_reset_utterance_state(now)
+
         text = self._normalize_text(text)
         text = self._collapse_immediate_repetitions(text)
+        self._partial_promoted_since_last_final = False
+        self._last_stt_activity_at = now
         if not text:
             self._log("FINAL: <empty>")
             return
 
-        incremental_text = self._extract_incremental_text(self.last_final_text, text)
+        incremental_text = self._extract_incremental_text(self.last_emitted_source_text, text)
         if not incremental_text:
             self._log("FINAL skipped: duplicate/overlap")
+            self.last_final_text = text
             return
 
         self.last_final_text = text
@@ -361,10 +383,14 @@ class AudioEngine:
             with self._pending_final_lock:
                 if self._pending_final_text:
                     age = time.monotonic() - self._pending_final_updated_at
-                    if age >= self.app_config.stt.final_debounce_sec:
+                    debounce_sec = self.app_config.stt.final_debounce_sec
+                    if self._pending_final_is_partial:
+                        debounce_sec = self._get_partial_merge_window_sec()
+                    if age >= debounce_sec:
                         ready_text = self._pending_final_text
                         self._pending_final_text = ""
                         self._pending_final_updated_at = 0.0
+                        self._pending_final_is_partial = False
 
             if ready_text:
                 self._enqueue_final_text(ready_text)
@@ -403,6 +429,7 @@ class AudioEngine:
             return
 
         self.last_translated_text = translated_text
+        self.last_translated_at = time.monotonic()
         self._log(f"TRANSLATED: {translated_text}")
 
         tts_service = self.tts_service
@@ -523,14 +550,33 @@ class AudioEngine:
         with self._pending_final_lock:
             self._pending_final_text = ""
             self._pending_final_updated_at = 0.0
+            self._pending_final_is_partial = False
 
     def _clear_partial_state(self) -> None:
         with self._partial_lock:
             self._last_partial_text = ""
             self._last_partial_changed_at = 0.0
             self._last_partial_emitted_text = ""
+        self._partial_promoted_since_last_final = False
 
-    def _stage_final_text(self, text: str) -> None:
+    def _reset_utterance_state(self) -> None:
+        self.last_final_text = ""
+        self.last_enqueued_final_text = ""
+        self.last_emitted_source_text = ""
+        self._clear_pending_final()
+        self._clear_partial_state()
+
+    def _maybe_reset_utterance_state(self, now: float) -> None:
+        if self._last_stt_activity_at <= 0.0:
+            return
+
+        inactivity_sec = now - self._last_stt_activity_at
+        if inactivity_sec < 2.0:
+            return
+
+        self._reset_utterance_state()
+
+    def _stage_final_text(self, text: str, is_partial: bool = False) -> None:
         text = self._normalize_text(text)
         if not text:
             return
@@ -543,12 +589,14 @@ class AudioEngine:
                 if merged_text != pending_text:
                     self._log(f"FINAL merged: {merged_text}")
                 self._pending_final_text = merged_text
+                self._pending_final_is_partial = self._pending_final_is_partial and is_partial
             else:
                 self._pending_final_text = text
+                self._pending_final_is_partial = is_partial
 
             self._pending_final_updated_at = time.monotonic()
 
-    def _enqueue_final_text(self, text: str) -> None:
+    def _enqueue_final_text(self, text: str, source_text: str | None = None) -> None:
         normalized_incremental = self._normalize_compare_text(text)
         normalized_last_enqueued = self._normalize_compare_text(self.last_enqueued_final_text)
 
@@ -559,6 +607,11 @@ class AudioEngine:
         try:
             self.final_text_queue.put_nowait(text)
             self.last_enqueued_final_text = text
+            emitted_source = source_text if source_text is not None else text
+            self.last_emitted_source_text = self._merge_final_texts(
+                self.last_emitted_source_text,
+                emitted_source,
+            )
         except queue.Full:
             self._handle_error("Final text queue is full, dropping phrase")
 
@@ -584,7 +637,7 @@ class AudioEngine:
         if self._normalize_compare_text(partial_text) == self._normalize_compare_text(last_partial_emitted_text):
             return
 
-        incremental_text = self._extract_incremental_text(self.last_enqueued_final_text, partial_text)
+        incremental_text = self._extract_incremental_text(self.last_emitted_source_text, partial_text)
         incremental_text = self._normalize_text(incremental_text)
         if not incremental_text:
             return
@@ -592,11 +645,78 @@ class AudioEngine:
         if len(incremental_text.split()) < self.app_config.stt.partial_min_words:
             return
 
+        if not self._should_emit_partial_text(partial_text, incremental_text):
+            return
+
         self._log(f"PARTIAL promoted: {incremental_text}")
-        self._enqueue_final_text(incremental_text)
+        self._stage_final_text(incremental_text, is_partial=True)
+        self.last_emitted_source_text = self._merge_final_texts(
+            self.last_emitted_source_text,
+            partial_text,
+        )
+        if self._get_active_branch_config().translation_direction == "ru_to_en":
+            self._partial_promoted_since_last_final = True
 
         with self._partial_lock:
             self._last_partial_emitted_text = partial_text
+
+    def _should_emit_partial_text(self, partial_text: str, incremental_text: str) -> bool:
+        branch_config = self._get_active_branch_config()
+        if branch_config.translation_direction != "ru_to_en":
+            return True
+
+        if self._partial_promoted_since_last_final:
+            return False
+
+        normalized_partial = self._normalize_text(partial_text)
+        normalized_incremental = self._normalize_text(incremental_text)
+        if not normalized_partial or not normalized_incremental:
+            return False
+
+        incremental_word_count = len(normalized_incremental.split())
+        if incremental_word_count < max(4, self.app_config.stt.partial_min_words):
+            return False
+
+        if normalized_partial[-1] not in ".!?":
+            return False
+
+        partial_norm = self._normalize_compare_text(normalized_partial)
+        if partial_norm.endswith("меня зовут я"):
+            return False
+
+        tail_word = "".join(ch for ch in normalized_incremental.split()[-1].lower() if ch.isalnum())
+        weak_tail_words = {
+            "и",
+            "в",
+            "во",
+            "на",
+            "с",
+            "со",
+            "к",
+            "ко",
+            "у",
+            "из",
+            "от",
+            "до",
+            "для",
+            "по",
+            "под",
+            "над",
+            "же",
+            "а",
+            "но",
+            "или",
+        }
+        if tail_word in weak_tail_words:
+            return False
+
+        return True
+
+    def _get_partial_merge_window_sec(self) -> float:
+        branch_config = self._get_active_branch_config()
+        if branch_config.translation_direction == "ru_to_en":
+            return min(0.35, self.app_config.stt.final_debounce_sec)
+        return min(0.20, self.app_config.stt.final_debounce_sec)
 
     @staticmethod
     def _merge_final_texts(previous: str, current: str) -> str:
@@ -656,6 +776,9 @@ class AudioEngine:
             return True
 
         if not previous:
+            return False
+
+        if (time.monotonic() - self.last_translated_at) > 4.0:
             return False
 
         if current == previous:

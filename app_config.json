@@ -30,7 +30,7 @@
       "enabled": true,
       "stt_language": "ru-RU",
       "translation_direction": "ru_to_en",
-      "tts_voice_name": "ru_RU-dmitri-medium",
+      "tts_voice_name": "en_US-ryan-medium",
       "nim_container_id": "parakeet-1-1b-rnnt-multilingual",
       "nim_tags_selector": "mode=str",
       "nim_startup_timeout_sec": 60.0
@@ -52,7 +52,7 @@
     "enabled": true
   },
   "tts": {
-    "voice_name": "ru_RU-dmitri-medium",
+    "voice_name": "en_US-ryan-medium",
     "data_dir": "/media/yaroslav/DATA/ai_models/piper",
     "use_cuda": null,
     "max_queue_latency_sec": 0.75

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import re
 from typing import Optional
 
 import torch
@@ -32,7 +33,7 @@ class TranslationService:
         self.model.to(self.device)
 
     def translate(self, text: str) -> str:
-        text = (text or "").strip()
+        text = self._normalize_source_text(text)
 
         if not self.config.enabled or not text:
             return text
@@ -59,7 +60,39 @@ class TranslationService:
             skip_special_tokens=True,
         )
 
-        return translated[0].strip() if translated else ""
+        result = translated[0].strip() if translated else ""
+        return self._postprocess_translation(result)
+
+    def _normalize_source_text(self, text: str) -> str:
+        text = (text or "").strip()
+        if not text:
+            return ""
+
+        if self.config.direction == TranslationDirection.RU_TO_EN:
+            text = re.sub(
+                r"\bинженером[\s-]+программистом\b",
+                "инженером-программистом",
+                text,
+                flags=re.IGNORECASE,
+            )
+
+        return " ".join(text.split())
+
+    def _postprocess_translation(self, text: str) -> str:
+        text = (text or "").strip()
+        if not text:
+            return ""
+
+        if self.config.direction == TranslationDirection.RU_TO_EN:
+            replacements = {
+                "programmer engineer": "software engineer",
+                "Programmer engineer": "Software engineer",
+                "Short sentence": "Short phrase",
+            }
+            for source, target in replacements.items():
+                text = text.replace(source, target)
+
+        return " ".join(text.split())
 
     def _resolve_model_name(self, direction: TranslationDirection) -> str:
         if direction == TranslationDirection.EN_TO_RU:
