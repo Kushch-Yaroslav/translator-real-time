@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, fields
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, Type, TypeVar
 
@@ -41,6 +41,11 @@ class TranslationRuntimeConfig:
 
 
 @dataclass
+class AppRuntimeConfig:
+    conversation_mode: str = "all"
+
+
+@dataclass
 class TTSRuntimeConfig:
     voice_name: str = "ru_RU-dmitri-medium"
     data_dir: str = "/media/yaroslav/DATA/ai_models/piper"
@@ -50,6 +55,7 @@ class TTSRuntimeConfig:
 
 @dataclass
 class AppConfig:
+    runtime: AppRuntimeConfig
     audio: AudioConfig
     stt: STTConfig
     translation: TranslationRuntimeConfig
@@ -57,6 +63,7 @@ class AppConfig:
 
 
 DEFAULT_CONFIG = AppConfig(
+    runtime=AppRuntimeConfig(),
     audio=AudioConfig(),
     stt=STTConfig(),
     translation=TranslationRuntimeConfig(),
@@ -68,6 +75,10 @@ def get_default_config_path() -> Path:
     return Path(__file__).resolve().parent.parent / "app_config.json"
 
 
+def get_profiles_dir() -> Path:
+    return Path(__file__).resolve().parent.parent / "profiles"
+
+
 def load_app_config(path: str | Path | None = None) -> AppConfig:
     config_path = Path(path) if path else get_default_config_path()
     if not config_path.exists():
@@ -75,11 +86,30 @@ def load_app_config(path: str | Path | None = None) -> AppConfig:
 
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     return AppConfig(
+        runtime=_load_section(AppRuntimeConfig, payload.get("runtime")),
         audio=_load_section(AudioConfig, payload.get("audio")),
         stt=_load_section(STTConfig, payload.get("stt")),
         translation=_load_section(TranslationRuntimeConfig, payload.get("translation")),
         tts=_load_section(TTSRuntimeConfig, payload.get("tts")),
     )
+
+
+def save_app_config(config: AppConfig, path: str | Path | None = None) -> Path:
+    config_path = Path(path) if path else get_default_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(asdict(config), indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def list_profile_paths() -> list[Path]:
+    profiles_dir = get_profiles_dir()
+    if not profiles_dir.exists():
+        return []
+
+    return sorted(profiles_dir.glob("*.json"))
 
 
 def _load_section(section_type: Type[T], payload: Any) -> T:

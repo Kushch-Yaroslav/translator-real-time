@@ -1,46 +1,78 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
 from typing import List
-import sounddevice as sd
 
+import sounddevice as sd
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
+    QCheckBox,
     QComboBox,
-    QTextEdit,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
     QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
+from core.app_config import (
+    AppConfig,
+    AppRuntimeConfig,
+    AudioConfig,
+    STTConfig,
+    TTSRuntimeConfig,
+    TranslationRuntimeConfig,
+    get_default_config_path,
+    get_profiles_dir,
+    list_profile_paths,
+    load_app_config,
+    save_app_config,
+)
 from core.audio_engine import AudioEngine
-from core.app_config import get_default_config_path, load_app_config
 from core.audio_service import (
     AudioDevice,
-    list_input_devices,
-    list_output_devices,
+    TRANSLATOR_SINK_NAME,
     enrich_default_flags,
     ensure_translator_sink_exists,
-    TRANSLATOR_SINK_NAME,
+    list_input_devices,
+    list_output_devices,
 )
 from core.audio_utils import find_sounddevice_device_index_by_name
 from core.chunk_processor import ProcessingMode
+from core.file_logger import AppFileLogger
 
 
 class MainWindow(QWidget):
     log_signal = Signal(str)
     error_signal = Signal(str)
 
+    PRESET_BALANCED = "balanced"
+    PRESET_LOW_LATENCY = "low_latency"
+    PRESET_HIGH_QUALITY = "high_quality"
+
+    MODE_ALL = "all"
+    MODE_LISTEN_ONLY = "listen_only"
+    MODE_SPEAK_ONLY = "speak_only"
+
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Translator Audio App")
-        self.resize(860, 620)
+        self.setWindowTitle("Мой переводчик")
+        self.resize(1080, 860)
 
         self.app_config_path = get_default_config_path()
+        self.profiles_dir = get_profiles_dir()
         self.app_config = load_app_config(self.app_config_path)
+        self.file_logger = AppFileLogger()
+        self.file_logger.session_started()
         self.engine = AudioEngine(self.app_config)
 
         self.input_devices: List[AudioDevice] = []
@@ -52,84 +84,198 @@ class MainWindow(QWidget):
         self.log_signal.connect(self._append_log_to_ui)
         self.error_signal.connect(self._append_error_to_ui)
 
-        # ВАЖНО: теперь engine пишет не прямо в QTextEdit,
-        # а через thread-safe Qt signals
-        self.engine.on_log = self.log_signal.emit
-        self.engine.on_error = self.error_signal.emit
+        self.engine.on_log = self._handle_engine_log
+        self.engine.on_error = self._handle_engine_error
 
+        self._apply_config_to_ui(self.app_config)
+        self._reload_profiles()
         self.load_devices()
 
     def _build_ui(self) -> None:
         self.main_layout = QVBoxLayout(self)
 
         self.info_label = QLabel(
-            "Pipeline сейчас: real mic -> Python AudioEngine -> TranslatorMic\n"
+            "Локальный пайплайн: микрофон -> STT -> перевод -> TTS -> TranslatorMic\n"
             "В Telegram выбирай устройство записи: Monitor of TranslatorMic\n"
-            f"Config: {self.app_config_path}"
+            f"Конфиг: {self.app_config_path}\n"
+            f"Лог: {self.file_logger.log_path}"
         )
         self.main_layout.addWidget(self.info_label)
 
-        input_layout = QHBoxLayout()
-        input_label = QLabel("Input microphone:")
-        self.input_combo = QComboBox()
-        input_layout.addWidget(input_label)
-        input_layout.addWidget(self.input_combo)
-        self.main_layout.addLayout(input_layout)
-
-        output_layout = QHBoxLayout()
-        output_label = QLabel("Output sink for app:")
-        self.output_combo = QComboBox()
-        output_layout.addWidget(output_label)
-        output_layout.addWidget(self.output_combo)
-        self.main_layout.addLayout(output_layout)
-
-        mode_layout = QHBoxLayout()
-        mode_label = QLabel("Processing mode:")
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItem("Passthrough", ProcessingMode.PASSTHROUGH.value)
-        self.mode_combo.addItem("Mute", ProcessingMode.MUTE.value)
-        self.mode_combo.addItem("Test tone", ProcessingMode.TEST_TONE.value)
-
-        self.apply_mode_button = QPushButton("Apply mode")
-
-        mode_layout.addWidget(mode_label)
-        mode_layout.addWidget(self.mode_combo)
-        mode_layout.addWidget(self.apply_mode_button)
-        self.main_layout.addLayout(mode_layout)
-
-        stt_layout = QHBoxLayout()
-        stt_label = QLabel("STT window:")
-        self.stt_window_combo = QComboBox()
-        self.stt_window_combo.addItem("0.5 sec", 0.5)
-        self.stt_window_combo.addItem("1.0 sec", 1.0)
-        self.stt_window_combo.addItem("2.0 sec", 2.0)
-        self.stt_window_combo.setCurrentIndex(1)
-
-        stt_layout.addWidget(stt_label)
-        stt_layout.addWidget(self.stt_window_combo)
-        self.main_layout.addLayout(stt_layout)
-
-        buttons_layout = QHBoxLayout()
-        self.refresh_button = QPushButton("Refresh devices")
-        self.start_button = QPushButton("Start pipeline")
-        self.stop_button = QPushButton("Stop pipeline")
-        self.stop_button.setEnabled(False)
-
-        buttons_layout.addWidget(self.refresh_button)
-        buttons_layout.addWidget(self.start_button)
-        buttons_layout.addWidget(self.stop_button)
-
-        self.main_layout.addLayout(buttons_layout)
+        self.main_layout.addWidget(self._build_devices_group())
+        self.main_layout.addWidget(self._build_profiles_group())
+        self.main_layout.addWidget(self._build_runtime_group())
+        self.main_layout.addWidget(self._build_stt_group())
+        self.main_layout.addWidget(self._build_tts_group())
+        self.main_layout.addWidget(self._build_audio_group())
+        self.main_layout.addWidget(self._build_controls_group())
 
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         self.main_layout.addWidget(self.log_output)
 
+    def _build_devices_group(self) -> QGroupBox:
+        group = QGroupBox("Устройства")
+        layout = QFormLayout(group)
+
+        self.input_combo = QComboBox()
+        self.output_combo = QComboBox()
+
+        layout.addRow("Микрофон:", self.input_combo)
+        layout.addRow("Выход приложения:", self.output_combo)
+        return group
+
+    def _build_profiles_group(self) -> QGroupBox:
+        group = QGroupBox("Профили и пресеты")
+        layout = QVBoxLayout(group)
+
+        preset_layout = QHBoxLayout()
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItem("Сбалансированный", self.PRESET_BALANCED)
+        self.preset_combo.addItem("Низкая задержка", self.PRESET_LOW_LATENCY)
+        self.preset_combo.addItem("Стабильное качество", self.PRESET_HIGH_QUALITY)
+        self.apply_preset_button = QPushButton("Применить пресет")
+        preset_layout.addWidget(QLabel("Макрос:"))
+        preset_layout.addWidget(self.preset_combo)
+        preset_layout.addWidget(self.apply_preset_button)
+        layout.addLayout(preset_layout)
+
+        profile_layout = QHBoxLayout()
+        self.profile_combo = QComboBox()
+        self.load_profile_button = QPushButton("Загрузить профиль")
+        self.save_profile_button = QPushButton("Сохранить как профиль")
+        profile_layout.addWidget(QLabel("Профиль:"))
+        profile_layout.addWidget(self.profile_combo)
+        profile_layout.addWidget(self.load_profile_button)
+        profile_layout.addWidget(self.save_profile_button)
+        layout.addLayout(profile_layout)
+
+        return group
+
+    def _build_runtime_group(self) -> QGroupBox:
+        group = QGroupBox("Режим работы")
+        layout = QFormLayout(group)
+
+        self.conversation_mode_combo = QComboBox()
+        self.conversation_mode_combo.addItem("Всё сразу", self.MODE_ALL)
+        self.conversation_mode_combo.addItem("Только слушать", self.MODE_LISTEN_ONLY)
+        self.conversation_mode_combo.addItem("Только говорить", self.MODE_SPEAK_ONLY)
+
+        self.translation_direction_combo = QComboBox()
+        self.translation_direction_combo.addItem("EN -> RU", "en_to_ru")
+        self.translation_direction_combo.addItem("RU -> EN", "ru_to_en")
+
+        self.translation_enabled_checkbox = QCheckBox("Включить перевод")
+        self.translation_enabled_checkbox.setChecked(True)
+
+        self.partial_emit_checkbox = QCheckBox("Разрешить ранний вывод по partial")
+        self.partial_emit_checkbox.setChecked(True)
+
+        self.mode_note_label = QLabel(
+            "Режимы общения сейчас сохраняются в профиле. Полная логика "
+            "`только слушать / только говорить` будет подключена отдельным шагом."
+        )
+        self.mode_note_label.setWordWrap(True)
+
+        layout.addRow("Сценарий общения:", self.conversation_mode_combo)
+        layout.addRow("Направление перевода:", self.translation_direction_combo)
+        layout.addRow("", self.translation_enabled_checkbox)
+        layout.addRow("", self.partial_emit_checkbox)
+        layout.addRow("", self.mode_note_label)
+        return group
+
+    def _build_stt_group(self) -> QGroupBox:
+        group = QGroupBox("Распознавание и сегментация")
+        layout = QFormLayout(group)
+
+        self.commit_interval_spin = self._build_double_spin(0.1, 2.0, 0.05, 2)
+        self.final_debounce_spin = self._build_double_spin(0.1, 2.0, 0.05, 2)
+        self.partial_stability_spin = self._build_double_spin(0.1, 2.0, 0.05, 2)
+        self.partial_min_words_spin = self._build_int_spin(1, 12, 1)
+        self.noise_gate_threshold_spin = self._build_double_spin(0.001, 0.05, 0.001, 3)
+        self.noise_gate_hangover_spin = self._build_double_spin(0.05, 1.5, 0.05, 2)
+        self.stt_window_combo = QComboBox()
+        self.stt_window_combo.addItem("0.5 сек", 0.5)
+        self.stt_window_combo.addItem("1.0 сек", 1.0)
+        self.stt_window_combo.addItem("2.0 сек", 2.0)
+
+        layout.addRow("Окно STT в UI:", self.stt_window_combo)
+        layout.addRow("Интервал commit:", self.commit_interval_spin)
+        layout.addRow("Ожидание final:", self.final_debounce_spin)
+        layout.addRow("Стабильность partial:", self.partial_stability_spin)
+        layout.addRow("Мин. слов в partial:", self.partial_min_words_spin)
+        layout.addRow("Порог шумоподавления:", self.noise_gate_threshold_spin)
+        layout.addRow("Хвост шумоподавления:", self.noise_gate_hangover_spin)
+        return group
+
+    def _build_tts_group(self) -> QGroupBox:
+        group = QGroupBox("Синтез речи")
+        layout = QFormLayout(group)
+
+        self.voice_combo = QComboBox()
+        self.voice_combo.addItem("Русский Dmitri Medium", "ru_RU-dmitri-medium")
+        self.voice_combo.addItem("English Lessac Medium", "en_US-lessac-medium")
+        self.voice_combo.addItem("English Ryan Medium", "en_US-ryan-medium")
+
+        self.max_queue_latency_spin = self._build_double_spin(0.1, 3.0, 0.05, 2)
+
+        layout.addRow("Голос:", self.voice_combo)
+        layout.addRow("Макс. задержка очереди TTS:", self.max_queue_latency_spin)
+        return group
+
+    def _build_audio_group(self) -> QGroupBox:
+        group = QGroupBox("Аудио")
+        layout = QFormLayout(group)
+
+        self.samplerate_spin = self._build_int_spin(8000, 96000, 1000)
+        self.blocksize_spin = self._build_int_spin(128, 4096, 64)
+        self.channels_combo = QComboBox()
+        self.channels_combo.addItem("1 (моно)", 1)
+        self.channels_combo.addItem("2 (стерео)", 2)
+
+        layout.addRow("Частота дискретизации:", self.samplerate_spin)
+        layout.addRow("Размер блока:", self.blocksize_spin)
+        layout.addRow("Каналы:", self.channels_combo)
+        return group
+
+    def _build_controls_group(self) -> QGroupBox:
+        group = QGroupBox("Управление")
+        layout = QVBoxLayout(group)
+
+        mode_layout = QHBoxLayout()
+        self.processing_mode_combo = QComboBox()
+        self.processing_mode_combo.addItem("Прямой проход", ProcessingMode.PASSTHROUGH.value)
+        self.processing_mode_combo.addItem("Тишина", ProcessingMode.MUTE.value)
+        self.processing_mode_combo.addItem("Тестовый тон", ProcessingMode.TEST_TONE.value)
+        self.apply_mode_button = QPushButton("Применить режим")
+        mode_layout.addWidget(QLabel("Режим обработки:"))
+        mode_layout.addWidget(self.processing_mode_combo)
+        mode_layout.addWidget(self.apply_mode_button)
+        layout.addLayout(mode_layout)
+
+        buttons_layout = QHBoxLayout()
+        self.refresh_button = QPushButton("Обновить устройства")
+        self.save_config_button = QPushButton("Сохранить текущий конфиг")
+        self.start_button = QPushButton("Запустить пайплайн")
+        self.stop_button = QPushButton("Остановить пайплайн")
+        self.stop_button.setEnabled(False)
+
+        buttons_layout.addWidget(self.refresh_button)
+        buttons_layout.addWidget(self.save_config_button)
+        buttons_layout.addWidget(self.start_button)
+        buttons_layout.addWidget(self.stop_button)
+        layout.addLayout(buttons_layout)
+        return group
+
     def _bind_events(self) -> None:
         self.refresh_button.clicked.connect(self.load_devices)
+        self.save_config_button.clicked.connect(self.save_current_config)
         self.start_button.clicked.connect(self.start_pipeline)
         self.stop_button.clicked.connect(self.stop_pipeline)
         self.apply_mode_button.clicked.connect(self.apply_mode)
+        self.apply_preset_button.clicked.connect(self.apply_selected_preset)
+        self.save_profile_button.clicked.connect(self.save_profile)
+        self.load_profile_button.clicked.connect(self.load_selected_profile)
 
     def load_devices(self) -> None:
         try:
@@ -169,24 +315,28 @@ class MainWindow(QWidget):
             if self.output_devices:
                 self.output_combo.setCurrentIndex(default_output_index)
 
-            self.log_signal.emit(
+            self._emit_log(
                 f"Loaded devices: inputs={len(self.input_devices)}, outputs={len(self.output_devices)}"
             )
 
         except Exception as error:
-            QMessageBox.critical(self, "Device error", str(error))
+            QMessageBox.critical(self, "Ошибка устройств", str(error))
 
     def start_pipeline(self) -> None:
         selected_input_name = self.input_combo.currentData()
         selected_output_name = self.output_combo.currentData()
 
         if not selected_input_name:
-            QMessageBox.warning(self, "Input error", "Select input device")
+            QMessageBox.warning(self, "Ошибка входа", "Выберите входной микрофон.")
             return
 
         if not selected_output_name:
-            QMessageBox.warning(self, "Output error", "Select output device")
+            QMessageBox.warning(self, "Ошибка выхода", "Выберите выходное устройство.")
             return
+
+        config = self._collect_config_from_ui()
+        self._set_app_config(config)
+        save_app_config(config, self.app_config_path)
 
         input_index = find_sounddevice_device_index_by_name(
             selected_input_name,
@@ -206,24 +356,24 @@ class MainWindow(QWidget):
         if output_index is not None:
             output_sd_name = sd.query_devices(output_index)["name"]
 
-        self.log_signal.emit(f"Selected pactl input: {selected_input_name}")
-        self.log_signal.emit(f"Selected pactl output: {selected_output_name}")
-        self.log_signal.emit(f"Mapped sounddevice input index: {input_index}, name: {input_sd_name}")
-        self.log_signal.emit(f"Mapped sounddevice output index: {output_index}, name: {output_sd_name}")
+        self._emit_log(f"Selected pactl input: {selected_input_name}")
+        self._emit_log(f"Selected pactl output: {selected_output_name}")
+        self._emit_log(f"Mapped sounddevice input index: {input_index}, name: {input_sd_name}")
+        self._emit_log(f"Mapped sounddevice output index: {output_index}, name: {output_sd_name}")
 
         if input_index is None:
             QMessageBox.critical(
                 self,
-                "Audio mapping error",
-                f"Could not map pactl input device to sounddevice:\n{selected_input_name}",
+                "Ошибка аудиомаршрутизации",
+                f"Не удалось сопоставить входное устройство:\n{selected_input_name}",
             )
             return
 
         if output_index is None:
             QMessageBox.critical(
                 self,
-                "Audio mapping error",
-                f"Could not map pactl output device to sounddevice:\n{selected_output_name}",
+                "Ошибка аудиомаршрутизации",
+                f"Не удалось сопоставить выходное устройство:\n{selected_output_name}",
             )
             return
 
@@ -246,36 +396,207 @@ class MainWindow(QWidget):
             self.start_button.setEnabled(False)
             self.stop_button.setEnabled(True)
 
-            self.log_signal.emit(
+            self._emit_log(
                 f"Pipeline started: input='{selected_input_name}' -> output='{selected_output_name}'"
             )
 
+            if self.app_config.runtime.conversation_mode != self.MODE_ALL:
+                self._emit_log(
+                    f"Conversation mode saved: {self.app_config.runtime.conversation_mode} "
+                    "(полная логика будет подключена позже)"
+                )
+
         except Exception as error:
-            QMessageBox.critical(self, "Start error", str(error))
+            QMessageBox.critical(self, "Ошибка запуска", str(error))
 
     def stop_pipeline(self) -> None:
         try:
             self.engine.stop()
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
-            self.log_signal.emit("Pipeline stopped")
+            self._emit_log("Pipeline stopped")
         except Exception as error:
-            QMessageBox.critical(self, "Stop error", str(error))
+            QMessageBox.critical(self, "Ошибка остановки", str(error))
+
+    def save_current_config(self) -> None:
+        config = self._collect_config_from_ui()
+        self._set_app_config(config)
+        save_app_config(config, self.app_config_path)
+        self._emit_log(f"Config saved: {self.app_config_path}")
 
     def apply_mode(self) -> None:
         if not self.engine.running:
-            self.log_signal.emit("Engine is not running yet. Mode will be applied after start.")
+            self._emit_log("Engine is not running yet. Mode will be applied after start.")
             return
 
         self._apply_selected_mode_to_engine()
 
+    def apply_selected_preset(self) -> None:
+        preset = self.preset_combo.currentData()
+        config = self._collect_config_from_ui()
+
+        if preset == self.PRESET_LOW_LATENCY:
+            config = replace(
+                config,
+                stt=replace(
+                    config.stt,
+                    commit_interval_sec=0.35,
+                    final_debounce_sec=0.45,
+                    partial_emit_enabled=True,
+                    partial_stability_sec=0.30,
+                    partial_min_words=3,
+                ),
+                tts=replace(config.tts, max_queue_latency_sec=0.50),
+            )
+        elif preset == self.PRESET_HIGH_QUALITY:
+            config = replace(
+                config,
+                stt=replace(
+                    config.stt,
+                    commit_interval_sec=0.55,
+                    final_debounce_sec=0.75,
+                    partial_emit_enabled=True,
+                    partial_stability_sec=0.55,
+                    partial_min_words=5,
+                ),
+                tts=replace(config.tts, max_queue_latency_sec=1.00),
+            )
+        else:
+            config = replace(
+                config,
+                stt=replace(
+                    config.stt,
+                    commit_interval_sec=0.50,
+                    final_debounce_sec=0.60,
+                    partial_emit_enabled=True,
+                    partial_stability_sec=0.45,
+                    partial_min_words=4,
+                ),
+                tts=replace(config.tts, max_queue_latency_sec=0.75),
+            )
+
+        self._apply_config_to_ui(config)
+        self._set_app_config(config)
+        self._emit_log(f"Preset applied: {preset}")
+
+    def save_profile(self) -> None:
+        profile_name, accepted = QInputDialog.getText(
+            self,
+            "Сохранение профиля",
+            "Имя профиля:",
+        )
+        if not accepted or not profile_name.strip():
+            return
+
+        safe_name = "".join(ch for ch in profile_name.strip() if ch.isalnum() or ch in ("-", "_", " "))
+        safe_name = safe_name.replace(" ", "_")
+        if not safe_name:
+            QMessageBox.warning(self, "Ошибка профиля", "Имя профиля пустое или некорректное.")
+            return
+
+        profile_path = self.profiles_dir / f"{safe_name}.json"
+        config = self._collect_config_from_ui()
+        self._set_app_config(config)
+        save_app_config(config, profile_path)
+        self._reload_profiles(selected_path=profile_path)
+        self._emit_log(f"Profile saved: {profile_path}")
+
+    def load_selected_profile(self) -> None:
+        profile_path_value = self.profile_combo.currentData()
+        if not profile_path_value:
+            QMessageBox.warning(self, "Ошибка профиля", "Выберите профиль для загрузки.")
+            return
+
+        profile_path = Path(profile_path_value)
+        config = load_app_config(profile_path)
+        self._apply_config_to_ui(config)
+        self._set_app_config(config)
+        self._emit_log(f"Profile loaded: {profile_path}")
+
+    def _reload_profiles(self, selected_path: Path | None = None) -> None:
+        self.profiles_dir.mkdir(parents=True, exist_ok=True)
+        self.profile_combo.clear()
+
+        for profile_path in list_profile_paths():
+            self.profile_combo.addItem(profile_path.stem, str(profile_path))
+
+        if selected_path is not None:
+            index = self.profile_combo.findData(str(selected_path))
+            if index >= 0:
+                self.profile_combo.setCurrentIndex(index)
+
+    def _set_app_config(self, config: AppConfig) -> None:
+        self.app_config = config
+        self.engine.app_config = config
+
+    def _collect_config_from_ui(self) -> AppConfig:
+        return AppConfig(
+            runtime=AppRuntimeConfig(
+                conversation_mode=str(self.conversation_mode_combo.currentData()),
+            ),
+            audio=AudioConfig(
+                samplerate=int(self.samplerate_spin.value()),
+                channels=int(self.channels_combo.currentData()),
+                blocksize=int(self.blocksize_spin.value()),
+            ),
+            stt=STTConfig(
+                base_url=self.app_config.stt.base_url,
+                ws_url=self.app_config.stt.ws_url,
+                language=self.app_config.stt.language,
+                sample_rate_hz=self.app_config.stt.sample_rate_hz,
+                num_channels=self.app_config.stt.num_channels,
+                timeout=self.app_config.stt.timeout,
+                commit_interval_sec=float(self.commit_interval_spin.value()),
+                enable_automatic_punctuation=self.app_config.stt.enable_automatic_punctuation,
+                final_debounce_sec=float(self.final_debounce_spin.value()),
+                partial_emit_enabled=bool(self.partial_emit_checkbox.isChecked()),
+                partial_stability_sec=float(self.partial_stability_spin.value()),
+                partial_min_words=int(self.partial_min_words_spin.value()),
+                noise_gate_threshold=float(self.noise_gate_threshold_spin.value()),
+                noise_gate_hangover_sec=float(self.noise_gate_hangover_spin.value()),
+            ),
+            translation=TranslationRuntimeConfig(
+                direction=str(self.translation_direction_combo.currentData()),
+                enabled=bool(self.translation_enabled_checkbox.isChecked()),
+            ),
+            tts=TTSRuntimeConfig(
+                voice_name=str(self.voice_combo.currentData()),
+                data_dir=self.app_config.tts.data_dir,
+                use_cuda=self.app_config.tts.use_cuda,
+                max_queue_latency_sec=float(self.max_queue_latency_spin.value()),
+            ),
+        )
+
+    def _apply_config_to_ui(self, config: AppConfig) -> None:
+        self._set_combo_data(self.conversation_mode_combo, config.runtime.conversation_mode)
+        self._set_combo_data(self.translation_direction_combo, config.translation.direction)
+        self.translation_enabled_checkbox.setChecked(config.translation.enabled)
+        self.partial_emit_checkbox.setChecked(config.stt.partial_emit_enabled)
+
+        self.commit_interval_spin.setValue(config.stt.commit_interval_sec)
+        self.final_debounce_spin.setValue(config.stt.final_debounce_sec)
+        self.partial_stability_spin.setValue(config.stt.partial_stability_sec)
+        self.partial_min_words_spin.setValue(config.stt.partial_min_words)
+        self.noise_gate_threshold_spin.setValue(config.stt.noise_gate_threshold)
+        self.noise_gate_hangover_spin.setValue(config.stt.noise_gate_hangover_sec)
+
+        self._set_combo_data(self.voice_combo, config.tts.voice_name)
+        self.max_queue_latency_spin.setValue(config.tts.max_queue_latency_sec)
+
+        self.samplerate_spin.setValue(config.audio.samplerate)
+        self.blocksize_spin.setValue(config.audio.blocksize)
+        self._set_combo_data(self.channels_combo, config.audio.channels)
+
+        self._set_combo_data(self.stt_window_combo, 1.0)
+        self._set_combo_data(self.processing_mode_combo, ProcessingMode.PASSTHROUGH.value)
+
     def _apply_selected_mode_to_engine(self) -> None:
-        selected_mode_value = self.mode_combo.currentData()
+        selected_mode_value = self.processing_mode_combo.currentData()
 
         try:
             mode = ProcessingMode(selected_mode_value)
         except Exception:
-            QMessageBox.warning(self, "Mode error", "Invalid processing mode selected")
+            QMessageBox.warning(self, "Ошибка режима", "Выбран некорректный режим обработки.")
             return
 
         self.engine.set_mode(mode)
@@ -284,9 +605,44 @@ class MainWindow(QWidget):
         self.log_output.append(message)
 
     def _append_error_to_ui(self, message: str) -> None:
-        self.log_output.append(f"ERROR: {message}")
+        self.log_output.append(f"ОШИБКА: {message}")
+
+    def _handle_engine_log(self, message: str) -> None:
+        self._emit_log(message)
+
+    def _handle_engine_error(self, message: str) -> None:
+        self._emit_error(message)
+
+    def _emit_log(self, message: str) -> None:
+        self.log_signal.emit(message)
+        self.file_logger.info(message)
+
+    def _emit_error(self, message: str) -> None:
+        self.error_signal.emit(message)
+        self.file_logger.error(message)
+
+    @staticmethod
+    def _build_double_spin(minimum: float, maximum: float, step: float, decimals: int) -> QDoubleSpinBox:
+        widget = QDoubleSpinBox()
+        widget.setRange(minimum, maximum)
+        widget.setSingleStep(step)
+        widget.setDecimals(decimals)
+        return widget
+
+    @staticmethod
+    def _build_int_spin(minimum: int, maximum: int, step: int) -> QSpinBox:
+        widget = QSpinBox()
+        widget.setRange(minimum, maximum)
+        widget.setSingleStep(step)
+        return widget
+
+    @staticmethod
+    def _set_combo_data(combo: QComboBox, value) -> None:
+        index = combo.findData(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
 
     @staticmethod
     def _format_device_label(device: AudioDevice) -> str:
-        default_suffix = " [default]" if device.is_default else ""
+        default_suffix = " [по умолчанию]" if device.is_default else ""
         return f"{device.description} ({device.name}){default_suffix}"

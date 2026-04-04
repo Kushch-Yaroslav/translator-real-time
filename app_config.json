@@ -1,4 +1,7 @@
 {
+  "runtime": {
+    "conversation_mode": "all"
+  },
   "audio": {
     "samplerate": 48000,
     "channels": 1,
