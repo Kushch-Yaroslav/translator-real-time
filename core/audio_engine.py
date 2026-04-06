@@ -37,6 +37,10 @@ from core.tts.tts_service import TTSService, TTSConfig
 
 
 class AudioEngine:
+    _KNOWN_STANDALONE_STT_HALLUCINATIONS = frozenset({
+        "продолжение следует",
+    })
+
     def __init__(self, app_config: AppConfig | None = None):
         self.session: Optional[AudioSession] = None
         self.worker_thread: Optional[threading.Thread] = None
@@ -401,6 +405,13 @@ class AudioEngine:
         if not text:
             return
 
+        sanitized_text = self._strip_known_stt_hallucination_tail(text)
+        if sanitized_text != text:
+            self._log(f"PARTIAL sanitized: removed hallucinated tail ({text} -> {sanitized_text or '<empty>'})")
+        text = sanitized_text
+        if not text:
+            return
+
         if self._uses_low_latency_direct_pipeline():
             self._last_stt_activity_at = now
             self._log(f"PARTIAL: {text}")
@@ -453,11 +464,19 @@ class AudioEngine:
 
         text = self._normalize_text(text)
         text = self._collapse_immediate_repetitions(text)
-        self._partial_promoted_since_last_final = False
-        self._last_stt_activity_at = now
         if not text:
             self._log("FINAL: <empty>")
             return
+
+        sanitized_text = self._strip_known_stt_hallucination_tail(text)
+        if sanitized_text != text:
+            self._log(f"FINAL sanitized: removed hallucinated tail ({text} -> {sanitized_text or '<empty>'})")
+        text = sanitized_text
+        if not text:
+            return
+
+        self._partial_promoted_since_last_final = False
+        self._last_stt_activity_at = now
 
         if self._uses_low_latency_direct_pipeline():
             self.last_final_text = text
@@ -1382,6 +1401,38 @@ class AudioEngine:
             return True
 
         return False
+
+    def _strip_known_stt_hallucination_tail(self, text: str) -> str:
+        if self._get_active_branch_config().translation_direction != "ru_to_en":
+            return self._normalize_text(text)
+
+        text = self._normalize_text(text)
+        if not text:
+            return ""
+
+        completed_sentences, trailing_fragment = self._split_sentences(text)
+
+        while completed_sentences and self._is_known_standalone_stt_hallucination(completed_sentences[-1]):
+            completed_sentences.pop()
+
+        if trailing_fragment and self._is_known_standalone_stt_hallucination(trailing_fragment):
+            trailing_fragment = ""
+
+        sanitized_parts = completed_sentences
+        if trailing_fragment:
+            sanitized_parts = [*sanitized_parts, trailing_fragment]
+
+        return self._normalize_text(" ".join(sanitized_parts))
+
+    def _is_known_standalone_stt_hallucination(self, text: str) -> bool:
+        normalized = self._normalize_compare_text(text)
+        if not normalized:
+            return False
+
+        if len(normalized.split()) > 3:
+            return False
+
+        return normalized in self._KNOWN_STANDALONE_STT_HALLUCINATIONS
 
     @staticmethod
     def _normalize_text(text: str) -> str:

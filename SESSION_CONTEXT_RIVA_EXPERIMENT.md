@@ -2,174 +2,246 @@
 
 ## What This Project Is
 
-Linux desktop realtime speech translator with:
-- local audio routing via PulseAudio/PipeWire
-- STT via NVIDIA NIM realtime websocket
-- translation via Marian/OPUS
-- TTS via Piper
-- output to virtual mic `translator_mic`
+Linux desktop realtime speech translator:
+- microphone input on Linux
+- STT
+- translation
+- TTS
+- output into virtual mic `translator_mic`
 
-Main current direction of work:
-- `RU -> EN` is the priority path
-- `EN -> RU` exists and is already in a more stable state
+Main real user scenario:
+- user speaks Russian
+- app should speak English into Telegram as fast as possible
+- target path is `RU -> EN`
 
-## Current Repo State
+Current product goal:
+- good translation quality
+- stable long session behavior
+- first audible English ideally near `2-3 sec`
 
-Important files:
-- `core/audio_engine.py`
-- `core/main_window.py`
-- `core/app_config.py`
-- `app_config.json`
-- `core/translation/translation_service.py`
-- `core/nim_runtime.py`
-- `tests/record_test_phrases.py`
-- `tests/record_test_phrases_ru_to_en.py`
-- `tests/evaluate_test_phrases.py`
-- `tests/evaluate_test_phrases_ru_to_en.py`
+User hardware:
+- RTX 3090 24GB
 
-Logs:
-- runtime app log: `logs/app.log`
-- startup log: `logs/startup.log`
+## Current Best State
 
-Test recordings are intentionally gitignored:
-- `recordings/test_phrases/`
-- `recordings/test_phrases_ru_to_en/`
+Current best practical state is **not** Riva, **not** Canary, **not** NIM hybrid.
 
-## What Was Already Done
+Current best backend:
+- `faster_whisper`
 
-### Stable base / infra
-- README in Russian was added earlier.
-- Config is stored in `app_config.json`.
-- UI is Russian.
-- Profiles/presets exist in UI.
-- File logging exists in `logs/app.log`.
-- Docker/NIM autostart exists through `core/nim_runtime.py`.
-- App does **not** stop Docker container on close.
+Current best observed behavior:
+- startup of speech often begins around `2-3 sec`
+- translation quality is generally good enough to use
+- first-run cold start after app open was significantly improved by background prewarm and service caching
 
-### EN -> RU
-- This branch was stabilized earlier.
-- Major issues like phantom finals, restart-per-final, TTS-on-CPU were handled.
+Current known remaining defect:
+- sometimes a false tail artifact appears:
+  - `To be continued...`
+- this artifact is known and tolerated for now because this state is still the best practical checkpoint
 
-### RU -> EN groundwork
-- Branch-aware config model exists in `core/app_config.py`.
-- `branches.primary` / `branches.secondary` exist.
-- `RU -> EN` was added as isolated direction, not full dual-branch runtime.
-- Current active branch in `app_config.json` is RU->EN-oriented.
+Important current decision:
+- stop chasing more heuristics for now
+- treat current `faster_whisper` state as the best checkpoint to resume from next session
 
-### RU -> EN quality changes already done
-- Anti-duplicate collapsing for repeated finals in `core/audio_engine.py`
-- Test evaluator also updated for repeated sentence collapsing
-- Lightweight translation normalization in `core/translation/translation_service.py`
-  - `инженером программистом` -> `инженером-программистом`
-  - `programmer engineer` -> `software engineer`
-  - `Short sentence` -> `Short phrase`
+## Current Active Architecture
 
-### RU -> EN live-latency experiments already attempted
+Current active path:
+- audio capture via sounddevice / PulseAudio-PipeWire environment
+- VAD + `faster-whisper` for realtime-ish STT
+- Marian/OPUS for text translation
+- Piper for TTS
+- output to `translator_mic`
 
-We tried multiple iterations on partial/final logic in `core/audio_engine.py`:
+Important active backend in config:
+- `stt.backend = "faster_whisper"`
 
-1. Disable partial emit entirely for RU->EN
-- Quality improved
-- Latency became too high (`~9 sec` in Telegram on short phrases)
+Important files now:
+- [core/audio_engine.py](/media/yaroslav/DATA/Мой%20переводчик/core/audio_engine.py)
+- [core/main_window.py](/media/yaroslav/DATA/Мой%20переводчик/core/main_window.py)
+- [core/stt_runtime.py](/media/yaroslav/DATA/Мой%20переводчик/core/stt_runtime.py)
+- [core/sst/faster_whisper_realtime_stt_service.py](/media/yaroslav/DATA/Мой%20переводчик/core/sst/faster_whisper_realtime_stt_service.py)
+- [core/translation/translation_service.py](/media/yaroslav/DATA/Мой%20переводчик/core/translation/translation_service.py)
+- [core/tts/tts_service.py](/media/yaroslav/DATA/Мой%20переводчик/core/tts/tts_service.py)
+- [core/audio_service.py](/media/yaroslav/DATA/Мой%20переводчик/core/audio_service.py)
+- [app_config.json](/media/yaroslav/DATA/Мой%20переводчик/app_config.json)
+- [logs/app.log](/media/yaroslav/DATA/Мой%20переводчик/logs/app.log)
+- [logs/startup.log](/media/yaroslav/DATA/Мой%20переводчик/logs/startup.log)
 
-2. Re-enable partial emit with stricter rules
-- Earlier start
-- But broken chunks appeared (`my name is me`, `I'm 26...`, etc.)
+## What Was Tried And Rejected
 
-3. Add `last_emitted_source_text`
-- Attempt to make final only emit the remaining tail after early partial
+### Old NIM partial heuristics
 
-4. Limit RU->EN to only one early partial per utterance
-- Reduced some chaos
+We spent a long time tuning partial/final heuristics inside `core/audio_engine.py`.
 
-5. Add short merge window for partial before enqueueing to translation/TTS
-- Intended to soften split between early partial and final tail
+Results:
+- could sometimes improve latency
+- often created broken tails, duplicates, contextual bleed, bad names, and unstable long-session behavior
 
-6. Add utterance-state reset after inactivity
-- Intended to make long open sessions behave better
+Conclusion:
+- not the right main path
 
-7. Restrict duplicate-skip by time window
-- Intended to allow repeating same phrase later in conversation
+### NVIDIA Riva
 
-8. Add specific guard against partial ending as `меня зовут я`
-- Intended to avoid `my name is me`
+Riva was integrated and tested as a separate backend.
 
-## Current Observed Behavior
+Results:
+- some promising starts on latency
+- but repeated problems with noisy partials, duplicated chunks, bad sentence segmentation, and unstable output
 
-Latest live tests are better than before, but still not solved:
+Conclusion:
+- not chosen as current best baseline
+
+### Boundary layer / confirm-pass variants
+
+We also tried:
+- separate sentence boundary layer
+- confirm-pass logic
+- boundary + confirm combinations
+
+Results:
+- complexity increased
+- quality/latency tradeoff still bad
+- too many moving parts for unreliable gain
+
+Conclusion:
+- not current direction
+
+### Canary AST
+
+Tried NVIDIA Canary AST path.
+
+Problems:
+- image availability / access issues
+- offline-like behavior
+- poor latency for this scenario
+- not practical enough on this setup
+
+Conclusion:
+- abandoned
+
+### Silero VAD + NIM hybrid
+
+Tried a hybrid path with Silero VAD plus NIM-based transcription.
+
+Problems:
+- wrong API fit in earlier attempts
+- later working version still did not beat current best path
+
+Conclusion:
+- abandoned
+
+## What Finally Worked Better
+
+The most useful changes that improved first-run and practical usage were:
+
+1. Switch to `faster_whisper`
+- this became the best practical STT backend in this repo so far
+
+2. Stop requiring NIM runtime for `faster_whisper`
+- `core/stt_runtime.py` now returns early for backend `faster_whisper`
+- this avoids fake startup failures like:
+  - `NIM did not become ready on http://localhost:9000 within ...`
+
+3. Add background prewarm on app open
+- app now starts warming runtime in the background after UI opens
+- this reduces first real phrase latency
+
+4. Cache heavy services between start/stop
+- translation service
+- TTS service
+- realtime STT service
+
+5. Keep low-latency direct pipeline for `faster_whisper`
+- there is a dedicated low-latency path in `core/audio_engine.py`
+- this is why startup can reach around `2-3 sec` in the good runs
+
+## Current Known Behavior
 
 ### Good
-- Long session behavior improved compared to older state.
-- Some phrases now start around `3.5s - 5s` instead of `9s - 10s`.
-- RU->EN is usable for some phrases.
 
-### Still bad / important remaining issues
-- Early partial sometimes cuts proper nouns or names:
-  - `Привет , меня зовут Яросла .` -> `Hi, my name is Jarosla.`
-  - `Привет , меня зовут я .` -> `Hey, my name's me.`
-- Incremental extraction after early partial can still cut the wrong tail.
-- Long session still has contextual bleed across phrases sometimes.
-- Toponyms like `Запорожье` are poorly recognized by STT and then translate into nonsense.
-- `Move recording stream ... FAILED` appears often in logs, though pipeline still continues.
+- first audible output can begin around `2-3 sec`
+- translation quality is now good enough to use live
+- cold start is much better than before
+- app is in a better state than all previous Riva / Canary / hybrid experiments
 
-### Important product conclusion from last session
+### Known bad
 
-User idea:
-- detect sentence boundary / point / pause
-- speak first finished sentence immediately
-- while user continues speaking next sentence in Russian
+- sometimes `To be continued...` appears even though user did not say it
+- this is a known artifact in the current best checkpoint
+- some phrases can still produce imperfect early partial output
+- `Move recording stream to source ... FAILED` still appears often in logs, but it does **not** seem to be the main blocker now
 
-Example:
-- User says: `Всем привет, меня зовут Ярослав, мне 26 лет. Я люблю программировать и я из города Запорожье.`
-- Desired behavior:
-  - first sentence should start English TTS immediately after sentence boundary
-  - second sentence should still be captured while first is being spoken
+### Important nuance
 
-This was considered the right direction.
+There was a long sequence of tiny heuristic edits after the good checkpoint.
+Some later edits made quality worse or pushed latency back to `5-6 sec`.
 
-## Decision Reached At End Of Session
+The state to continue from next session should be:
+- keep the fast-start `faster_whisper` baseline
+- do not blindly continue the latest heuristic churn
+- if changing anything, move carefully and compare against the known good baseline
 
-We do **not** want to keep endlessly tuning the current NIM partial heuristics in this same branch.
+## What Logs Show
 
-Next step should be:
-- create a **separate git branch**
-- run an experiment with **NVIDIA Riva**
+Useful files:
+- runtime app log: [logs/app.log](/media/yaroslav/DATA/Мой%20переводчик/logs/app.log)
+- startup log: [logs/startup.log](/media/yaroslav/DATA/Мой%20переводчик/logs/startup.log)
 
-Reason:
-- user asked whether NVIDIA already has tools for this
-- current NIM realtime partial/final heuristics are getting too messy
-- Riva may provide stronger streaming ASR features, VAD / end-of-utterance behavior, and possibly better segmentation support for this use case
+User often provides:
+- Telegram `.ogg` files with the actual English output
 
-## What Next Session Should Do
+This is very useful because:
+- logs show STT/translation/TTS timings
+- `.ogg` proves what really went out to Telegram
 
-The next Codex session should focus on an experiment branch for Riva.
+When resuming next session:
+- inspect `logs/app.log`
+- inspect latest Telegram `.ogg`
+- compare actual audio start time and spoken text
 
-Goal:
-- compare current NIM-based RU->EN pipeline with a Riva-based streaming ASR path
-- especially test whether Riva can produce earlier and cleaner sentence-level boundaries
-- do **not** break the current working baseline branch while experimenting
+## Current User Preference
 
-Suggested first actions in the next session:
-1. Read this file.
-2. Inspect current `core/sst/nim_realtime_stt_service.py`.
-3. Determine whether to create a parallel `riva_realtime_stt_service.py`.
-4. Check what Riva container / docs / local install assumptions are needed on this machine.
-5. Build the Riva experiment in isolation behind config, not as a destructive replacement.
+User explicitly prefers:
+- practical progress over theory
+- local-only solutions when possible
+- strong focus on `RU -> EN`
+- willingness to use lots of GPU/CPU/RAM if needed
 
-## Important User Preferences
+User also explicitly said:
+- it is acceptable to stop here and fix on the current best checkpoint
+- this current checkpoint is the best one so far even with `To be continued...`
 
-- User prefers concise practical work.
-- User is fine with separate git branch for experiments.
-- User wants local-only and free components.
-- User hardware: RTX 3090 24GB.
-- User is in Russian language workflow.
-- User cares more about `RU -> EN` than `EN -> RU`.
+## What Next Session Should Remember
 
-## Notes For Future Codex
+1. Read this file first.
+2. Assume current best backend is `faster_whisper`.
+3. Do not restart from Riva or Canary unless user explicitly asks.
+4. The main unresolved defect at this checkpoint is:
+   - false `To be continued...`
+5. The main success at this checkpoint is:
+   - startup around `2-3 sec`
+   - generally good translation
 
-- Do not revert unrelated changes.
-- Do not stop Docker container on app close.
-- Be careful with anti-duplicate logic: user explicitly noted that if someone asks the same question again, the phrase still must be spoken.
-- Live-session stability matters more now than isolated one-shot phrase success.
-- Current branch can likely be treated as `RU->EN baseline`, not final product.
+## Important Do And Don't
+
+Do:
+- preserve fast-start behavior
+- preserve prewarm and service caching
+- compare any new heuristic against the current `2-3 sec` startup baseline
+- use Telegram `.ogg` plus logs as the source of truth
+
+Do not:
+- revert unrelated user changes
+- stop Docker containers on app close
+- assume Riva/Canary are still active directions
+- reintroduce slow `5-6 sec` startup just to clean one artifact
+
+## Practical Resume Point
+
+If next session continues work:
+- start from the current `faster_whisper` baseline
+- treat `To be continued...` as the known regression/defect
+- any further fix must preserve:
+  - `~2-3 sec` startup
+  - generally good RU -> EN translation quality
 
