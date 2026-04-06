@@ -4,7 +4,7 @@ import json
 import subprocess
 import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 
 TRANSLATOR_SINK_NAME = "translator_mic"
@@ -147,6 +147,21 @@ def _list_source_outputs() -> list[dict]:
     return json.loads(output)
 
 
+def _format_stream_debug_line(item: dict) -> str:
+    props = _safe_get_props(item)
+    index = item.get("index", "?")
+    name = item.get("name", "") or props.get("node.name", "")
+    app_name = props.get("application.name", "")
+    media_name = props.get("media.name", "")
+    binary_name = props.get("application.process.binary", "")
+    source_name = item.get("source", "") or item.get("source_name", "")
+    sink_name = item.get("sink", "") or item.get("sink_name", "")
+    return (
+        f"index={index} name='{name}' app='{app_name}' media='{media_name}' "
+        f"binary='{binary_name}' source='{source_name}' sink='{sink_name}'"
+    )
+
+
 def _find_our_pulse_sink_input_id() -> Optional[str]:
     """
     Ищем playback stream нашего Python-приложения.
@@ -183,14 +198,61 @@ def _find_our_pulse_source_output_id() -> Optional[str]:
     return None
 
 
-def move_app_playback_to_sink(target_sink_name: str, retries: int = 20, delay: float = 0.15) -> bool:
+def log_audio_routing_snapshot(
+    logger: Callable[[str], None],
+    *,
+    include_sink_inputs: bool = True,
+    include_source_outputs: bool = True,
+) -> None:
+    try:
+        if include_sink_inputs:
+            sink_inputs = _list_sink_inputs()
+            if not sink_inputs:
+                logger("Audio routing snapshot | sink-inputs: <none>")
+            else:
+                logger(f"Audio routing snapshot | sink-inputs={len(sink_inputs)}")
+                for item in sink_inputs:
+                    logger(f"  sink-input { _format_stream_debug_line(item) }")
+    except Exception as error:
+        logger(f"Audio routing snapshot | sink-inputs error: {error}")
+
+    try:
+        if include_source_outputs:
+            source_outputs = _list_source_outputs()
+            if not source_outputs:
+                logger("Audio routing snapshot | source-outputs: <none>")
+            else:
+                logger(f"Audio routing snapshot | source-outputs={len(source_outputs)}")
+                for item in source_outputs:
+                    logger(f"  source-output { _format_stream_debug_line(item) }")
+    except Exception as error:
+        logger(f"Audio routing snapshot | source-outputs error: {error}")
+
+
+def move_app_playback_to_sink(
+    target_sink_name: str,
+    retries: int = 20,
+    delay: float = 0.15,
+    logger: Optional[Callable[[str], None]] = None,
+) -> bool:
     """
     После старта OutputStream перемещаем stream приложения в нужный sink.
     """
     for _ in range(retries):
         try:
+            sink_inputs = _list_sink_inputs()
             sink_input_id = _find_our_pulse_sink_input_id()
             if sink_input_id:
+                if logger is not None:
+                    matching = next(
+                        (item for item in sink_inputs if str(item.get("index")) == sink_input_id),
+                        None,
+                    )
+                    if matching is not None:
+                        logger(
+                            "Audio routing | moving sink-input "
+                            f"{_format_stream_debug_line(matching)} -> '{target_sink_name}'"
+                        )
                 subprocess.run(
                     ["pactl", "move-sink-input", sink_input_id, target_sink_name],
                     check=True,
@@ -198,31 +260,62 @@ def move_app_playback_to_sink(target_sink_name: str, retries: int = 20, delay: f
                     text=True,
                 )
                 return True
+            elif logger is not None:
+                logger("Audio routing | sink-input not found yet")
+                for item in sink_inputs:
+                    logger(f"  sink-input candidate { _format_stream_debug_line(item) }")
         except Exception:
-            pass
+            if logger is not None:
+                logger("Audio routing | move-sink-input attempt failed")
 
         time.sleep(delay)
 
     return False
 
 
-def move_app_recording_to_source(target_source_name: str, retries: int = 20, delay: float = 0.15) -> bool:
+def move_app_recording_to_source(
+    target_source_name: str,
+    retries: int = 20,
+    delay: float = 0.15,
+    logger: Optional[Callable[[str], None]] = None,
+) -> bool:
     """
     После старта InputStream перемещаем recording stream приложения на нужный source.
     """
     for _ in range(retries):
         try:
+            source_outputs = _list_source_outputs()
             source_output_id = _find_our_pulse_source_output_id()
             if source_output_id:
-                subprocess.run(
+                if logger is not None:
+                    matching = next(
+                        (item for item in source_outputs if str(item.get("index")) == source_output_id),
+                        None,
+                    )
+                    if matching is not None:
+                        logger(
+                            "Audio routing | moving source-output "
+                            f"{_format_stream_debug_line(matching)} -> '{target_source_name}'"
+                        )
+                result = subprocess.run(
                     ["pactl", "move-source-output", source_output_id, target_source_name],
-                    check=True,
                     capture_output=True,
                     text=True,
                 )
-                return True
-        except Exception:
-            pass
+                if result.returncode == 0:
+                    return True
+                if logger is not None:
+                    logger(
+                        "Audio routing | move-source-output failed "
+                        f"(code={result.returncode}): {result.stderr.strip()}"
+                    )
+            elif logger is not None:
+                logger("Audio routing | source-output not found yet")
+                for item in source_outputs:
+                    logger(f"  source-output candidate { _format_stream_debug_line(item) }")
+        except Exception as error:
+            if logger is not None:
+                logger(f"Audio routing | move-source-output attempt error: {error}")
 
         time.sleep(delay)
 

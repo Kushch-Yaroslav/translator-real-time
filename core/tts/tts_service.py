@@ -30,6 +30,9 @@ class TTSService:
 
         self.voice = PiperVoice.load(str(self.model_path), use_cuda=self.use_cuda)
 
+    def warmup(self, target_samplerate: int = 22050) -> None:
+        self.synthesize("Warm up.", target_samplerate=target_samplerate)
+
     def synthesize(self, text: str, target_samplerate: int) -> np.ndarray:
         text = (text or "").strip()
         if not text:

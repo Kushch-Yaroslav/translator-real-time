@@ -8,8 +8,12 @@
     "blocksize": 1024
   },
   "stt": {
+    "backend": "faster_whisper",
     "base_url": "http://localhost:9000",
     "ws_url": "ws://localhost:9000/v1/realtime?intent=transcription",
+    "riva_uri": "localhost:50051",
+    "riva_use_ssl": false,
+    "riva_ssl_cert_path": "",
     "language": "en-US",
     "sample_rate_hz": 16000,
     "num_channels": 1,
@@ -21,7 +25,27 @@
     "partial_stability_sec": 0.45,
     "partial_min_words": 4,
     "noise_gate_threshold": 0.009,
-    "noise_gate_hangover_sec": 0.35
+    "noise_gate_hangover_sec": 0.35,
+    "canary_container_id": "riva-asr",
+    "canary_tags_selector": "name=canary-0-6b-turbo,mode=ofl",
+    "canary_http_port": 9010,
+    "canary_grpc_port": 50061,
+    "canary_startup_timeout_sec": 300.0,
+    "canary_poll_interval_sec": 0.35,
+    "canary_min_window_sec": 0.85,
+    "canary_finalize_silence_sec": 0.4,
+    "silero_partial_interval_sec": 0.35,
+    "silero_min_window_sec": 0.9,
+    "silero_max_window_sec": 6.0,
+    "silero_min_silence_ms": 180,
+    "silero_speech_pad_ms": 80,
+    "silero_preroll_sec": 0.25,
+    "silero_speech_threshold": 0.55,
+    "whisper_model_size": "large-v3-turbo",
+    "whisper_compute_type": "float16",
+    "whisper_beam_size": 1,
+    "whisper_best_of": 1,
+    "whisper_patience": 1.0
   },
   "branches": {
     "primary": {
@@ -33,7 +57,7 @@
       "tts_voice_name": "en_US-ryan-medium",
       "nim_container_id": "parakeet-1-1b-rnnt-multilingual",
       "nim_tags_selector": "mode=str",
-      "nim_startup_timeout_sec": 60.0
+      "nim_startup_timeout_sec": 300.0
     },
     "secondary": {
       "branch_id": "secondary",
