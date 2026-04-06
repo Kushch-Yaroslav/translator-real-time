@@ -50,6 +50,17 @@
   "branches": {
     "primary": {
       "branch_id": "primary",
+      "label": "EN -> RU",
+      "enabled": true,
+      "stt_language": "en-US",
+      "translation_direction": "en_to_ru",
+      "tts_voice_name": "ru_RU-dmitri-medium",
+      "nim_container_id": "parakeet-1-1b-ctc-en-us",
+      "nim_tags_selector": "name=parakeet-1-1b-ctc-en-us,mode=str,diarizer=disabled,vad=default",
+      "nim_startup_timeout_sec": 300.0
+    },
+    "secondary": {
+      "branch_id": "secondary",
       "label": "RU -> EN",
       "enabled": true,
       "stt_language": "ru-RU",
@@ -58,25 +69,14 @@
       "nim_container_id": "parakeet-1-1b-rnnt-multilingual",
       "nim_tags_selector": "mode=str",
       "nim_startup_timeout_sec": 300.0
-    },
-    "secondary": {
-      "branch_id": "secondary",
-      "label": "RU -> EN",
-      "enabled": false,
-      "stt_language": "ru-RU",
-      "translation_direction": "ru_to_en",
-      "tts_voice_name": "en_US-lessac-medium",
-      "nim_container_id": "parakeet-1-1b-rnnt-multilingual",
-      "nim_tags_selector": "mode=str",
-      "nim_startup_timeout_sec": 180.0
     }
   },
   "translation": {
-    "direction": "ru_to_en",
+    "direction": "en_to_ru",
     "enabled": true
   },
   "tts": {
-    "voice_name": "en_US-ryan-medium",
+    "voice_name": "ru_RU-dmitri-medium",
     "data_dir": "/media/yaroslav/DATA/ai_models/piper",
     "use_cuda": null,
     "max_queue_latency_sec": 0.75

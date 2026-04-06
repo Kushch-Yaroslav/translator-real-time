@@ -1137,10 +1137,6 @@ class AudioEngine:
             return service, label, False
 
     def _uses_low_latency_direct_pipeline(self) -> bool:
-        branch_config = self._get_active_branch_config()
-        if branch_config.translation_direction != "ru_to_en":
-            return False
-
         backend = (self.app_config.stt.backend or "nim").strip().lower()
         return backend == "faster_whisper"
 
@@ -1161,12 +1157,7 @@ class AudioEngine:
         if self._low_latency_emitted_text:
             return
 
-        completed_sentences, _ = self._split_sentences(normalized)
-        candidate = ""
-        if completed_sentences:
-            candidate = self._normalize_text(completed_sentences[0])
-        elif self._low_latency_partial_repeat_count >= 2 and len(normalized.split()) >= 6:
-            candidate = normalized
+        candidate = self._select_low_latency_partial_candidate(normalized)
 
         if len(candidate.split()) < max(5, self.app_config.stt.partial_min_words):
             return
@@ -1189,6 +1180,10 @@ class AudioEngine:
         incremental = self._normalize_text(incremental)
         if not incremental:
             self._log("LOWLAT final skipped: duplicate/overlap")
+            return
+
+        if self._should_skip_low_latency_final_tail(incremental):
+            self._log(f"LOWLAT final skipped: weak tail ({incremental})")
             return
 
         if self._normalize_compare_text(incremental) == self._normalize_compare_text(self._low_latency_last_queued_text):
@@ -1238,6 +1233,40 @@ class AudioEngine:
             self._low_latency_partial_repeat_count = 0
             self._low_latency_last_queued_text = ""
             self._low_latency_partial_queued = False
+
+    def _select_low_latency_partial_candidate(self, normalized: str) -> str:
+        completed_sentences, _ = self._split_sentences(normalized)
+        if completed_sentences:
+            return self._normalize_text(completed_sentences[0])
+
+        if self._low_latency_partial_repeat_count >= 2 and len(normalized.split()) >= 6:
+            return normalized
+
+        return ""
+
+    def _should_skip_low_latency_final_tail(self, text: str) -> bool:
+        if not self._low_latency_emitted_text:
+            return False
+
+        words = text.split()
+        if len(words) >= 2:
+            return False
+
+        normalized = self._normalize_compare_text(text)
+        if not normalized:
+            return True
+
+        weak_single_word_tails = {
+            "you",
+            "thankyou",
+            "thanks",
+            "your",
+            "yours",
+            "tu",
+            "ty",
+            "ты",
+        }
+        return normalized in weak_single_word_tails
 
     def _get_partial_stability_window_sec(self) -> float:
         if self._uses_sentence_partial_streaming():
@@ -1542,7 +1571,36 @@ class AudioEngine:
             if common_prefix_len < len(raw_words):
                 return " ".join(raw_words[common_prefix_len:]).strip()
 
+        previous_tokens = AudioEngine._tokenize_compare_words(previous)
+        current_tokens = AudioEngine._tokenize_compare_words(current)
+        previous_token_values = [token for _, token in previous_tokens]
+        current_token_values = [token for _, token in current_tokens]
+
+        max_overlap = min(len(previous_token_values), len(current_token_values))
+        for overlap_len in range(max_overlap, 2, -1):
+            suffix = previous_token_values[-overlap_len:]
+            for start_idx in range(0, len(current_token_values) - overlap_len + 1):
+                candidate = current_token_values[start_idx:start_idx + overlap_len]
+                if candidate != suffix:
+                    continue
+
+                overlap_end = start_idx + overlap_len
+                if overlap_end >= len(current_tokens):
+                    return ""
+
+                return " ".join(raw for raw, _ in current_tokens[overlap_end:]).strip()
+
         return current.strip()
+
+    @staticmethod
+    def _tokenize_compare_words(text: str) -> list[tuple[str, str]]:
+        tokens: list[tuple[str, str]] = []
+        for raw_word in text.strip().split():
+            normalized_word = "".join(ch for ch in raw_word.lower() if ch.isalnum())
+            if not normalized_word:
+                continue
+            tokens.append((raw_word, normalized_word))
+        return tokens
 
     def _handle_error(self, message: str) -> None:
         if self.on_error:
