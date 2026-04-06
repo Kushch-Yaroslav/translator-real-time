@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import threading
 from typing import List
 
 import sounddevice as sd
@@ -94,6 +95,7 @@ class MainWindow(QWidget):
         self._apply_config_to_ui(self.app_config)
         self._reload_profiles()
         self.load_devices()
+        self._start_background_prewarm()
 
     def _build_ui(self) -> None:
         self.main_layout = QVBoxLayout(self)
@@ -195,6 +197,8 @@ class MainWindow(QWidget):
         self.stt_backend_combo = QComboBox()
         self.stt_backend_combo.addItem("NVIDIA NIM", "nim")
         self.stt_backend_combo.addItem("NVIDIA Riva", "riva")
+        self.stt_backend_combo.addItem("Silero VAD + faster-whisper", "faster_whisper")
+        self.stt_backend_combo.addItem("NVIDIA Canary AST", "canary_ast")
         self.commit_interval_spin = self._build_double_spin(0.1, 2.0, 0.05, 2)
         self.final_debounce_spin = self._build_double_spin(0.1, 2.0, 0.05, 2)
         self.partial_stability_spin = self._build_double_spin(0.1, 2.0, 0.05, 2)
@@ -539,7 +543,23 @@ class MainWindow(QWidget):
         self.app_config = config
         self.engine.app_config = config
 
+    def _start_background_prewarm(self) -> None:
+        worker = threading.Thread(
+            target=self._background_prewarm,
+            daemon=True,
+            name="runtime-prewarm",
+        )
+        worker.start()
+
+    def _background_prewarm(self) -> None:
+        try:
+            self.engine.prewarm_runtime()
+        except Exception as error:
+            self._emit_log(f"Runtime prewarm skipped: {error}")
+
     def _collect_config_from_ui(self) -> AppConfig:
+        current_stt = self.app_config.stt
+        current_primary = self.app_config.branches.primary
         return AppConfig(
             runtime=AppRuntimeConfig(
                 conversation_mode=str(self.conversation_mode_combo.currentData()),
@@ -551,23 +571,43 @@ class MainWindow(QWidget):
             ),
             stt=STTConfig(
                 backend=str(self.stt_backend_combo.currentData()),
-                base_url=self.app_config.stt.base_url,
-                ws_url=self.app_config.stt.ws_url,
-                riva_uri=self.app_config.stt.riva_uri,
-                riva_use_ssl=self.app_config.stt.riva_use_ssl,
-                riva_ssl_cert_path=self.app_config.stt.riva_ssl_cert_path,
-                language=self.app_config.stt.language,
-                sample_rate_hz=self.app_config.stt.sample_rate_hz,
-                num_channels=self.app_config.stt.num_channels,
-                timeout=self.app_config.stt.timeout,
+                base_url=current_stt.base_url,
+                ws_url=current_stt.ws_url,
+                riva_uri=current_stt.riva_uri,
+                riva_use_ssl=current_stt.riva_use_ssl,
+                riva_ssl_cert_path=current_stt.riva_ssl_cert_path,
+                language=current_stt.language,
+                sample_rate_hz=current_stt.sample_rate_hz,
+                num_channels=current_stt.num_channels,
+                timeout=current_stt.timeout,
                 commit_interval_sec=float(self.commit_interval_spin.value()),
-                enable_automatic_punctuation=self.app_config.stt.enable_automatic_punctuation,
+                enable_automatic_punctuation=current_stt.enable_automatic_punctuation,
                 final_debounce_sec=float(self.final_debounce_spin.value()),
                 partial_emit_enabled=bool(self.partial_emit_checkbox.isChecked()),
                 partial_stability_sec=float(self.partial_stability_spin.value()),
                 partial_min_words=int(self.partial_min_words_spin.value()),
                 noise_gate_threshold=float(self.noise_gate_threshold_spin.value()),
                 noise_gate_hangover_sec=float(self.noise_gate_hangover_spin.value()),
+                canary_container_id=current_stt.canary_container_id,
+                canary_tags_selector=current_stt.canary_tags_selector,
+                canary_http_port=current_stt.canary_http_port,
+                canary_grpc_port=current_stt.canary_grpc_port,
+                canary_startup_timeout_sec=current_stt.canary_startup_timeout_sec,
+                canary_poll_interval_sec=current_stt.canary_poll_interval_sec,
+                canary_min_window_sec=current_stt.canary_min_window_sec,
+                canary_finalize_silence_sec=current_stt.canary_finalize_silence_sec,
+                silero_partial_interval_sec=current_stt.silero_partial_interval_sec,
+                silero_min_window_sec=current_stt.silero_min_window_sec,
+                silero_max_window_sec=current_stt.silero_max_window_sec,
+                silero_min_silence_ms=current_stt.silero_min_silence_ms,
+                silero_speech_pad_ms=current_stt.silero_speech_pad_ms,
+                silero_preroll_sec=current_stt.silero_preroll_sec,
+                silero_speech_threshold=current_stt.silero_speech_threshold,
+                whisper_model_size=current_stt.whisper_model_size,
+                whisper_compute_type=current_stt.whisper_compute_type,
+                whisper_beam_size=current_stt.whisper_beam_size,
+                whisper_best_of=current_stt.whisper_best_of,
+                whisper_patience=current_stt.whisper_patience,
             ),
             branches=BranchesConfig(
                 primary=TranslationBranchConfig(
@@ -579,6 +619,7 @@ class MainWindow(QWidget):
                     tts_voice_name=str(self.voice_combo.currentData()),
                     nim_container_id=self._resolve_nim_container_id(str(self.translation_direction_combo.currentData())),
                     nim_tags_selector=self._resolve_nim_tags_selector(str(self.translation_direction_combo.currentData())),
+                    nim_startup_timeout_sec=current_primary.nim_startup_timeout_sec,
                 ),
                 secondary=self.app_config.branches.secondary,
             ),

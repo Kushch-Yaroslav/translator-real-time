@@ -36,6 +36,26 @@ class STTConfig:
     partial_min_words: int = 4
     noise_gate_threshold: float = 0.009
     noise_gate_hangover_sec: float = 0.35
+    canary_container_id: str = "riva-asr"
+    canary_tags_selector: str = "name=canary-0-6b-turbo,mode=ofl"
+    canary_http_port: int = 9010
+    canary_grpc_port: int = 50061
+    canary_startup_timeout_sec: float = 300.0
+    canary_poll_interval_sec: float = 0.35
+    canary_min_window_sec: float = 0.85
+    canary_finalize_silence_sec: float = 0.40
+    silero_partial_interval_sec: float = 0.35
+    silero_min_window_sec: float = 0.9
+    silero_max_window_sec: float = 6.0
+    silero_min_silence_ms: int = 180
+    silero_speech_pad_ms: int = 80
+    silero_preroll_sec: float = 0.25
+    silero_speech_threshold: float = 0.55
+    whisper_model_size: str = "large-v3-turbo"
+    whisper_compute_type: str = "float16"
+    whisper_beam_size: int = 1
+    whisper_best_of: int = 1
+    whisper_patience: float = 1.0
 
 
 @dataclass

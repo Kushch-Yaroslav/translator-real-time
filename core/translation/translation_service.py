@@ -32,6 +32,10 @@ class TranslationService:
         self.model = MarianMTModel.from_pretrained(self.model_name)
         self.model.to(self.device)
 
+    def warmup(self) -> None:
+        sample_text = "Привет." if self.config.direction == TranslationDirection.RU_TO_EN else "Hello."
+        self.translate(sample_text)
+
     def translate(self, text: str) -> str:
         text = self._normalize_source_text(text)
 

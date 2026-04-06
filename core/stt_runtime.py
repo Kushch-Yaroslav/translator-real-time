@@ -2,19 +2,56 @@ from __future__ import annotations
 
 import socket
 
-from core.app_config import AppConfig, load_app_config
-from core.nim_runtime import ensure_nim_runtime_for_app_config
+from core.app_config import AppConfig, get_primary_branch_config, load_app_config
+from core.nim_runtime import config_from_branch, ensure_nim_runtime, ensure_nim_runtime_for_app_config
 
 
 def ensure_stt_runtime_for_app_config(app_config: AppConfig | None = None) -> None:
     app_config = app_config or load_app_config()
     backend = (app_config.stt.backend or "nim").strip().lower()
 
+    if backend == "faster_whisper":
+        return
+
+    if backend == "canary_ast":
+        ensure_canary_runtime_for_app_config(app_config)
+        return
+
     if backend == "riva":
         ensure_riva_runtime_for_app_config(app_config)
+        ensure_confirm_runtime_for_app_config(app_config)
         return
 
     ensure_nim_runtime_for_app_config(app_config)
+
+
+def ensure_canary_runtime_for_app_config(app_config: AppConfig) -> None:
+    branch_config = get_primary_branch_config(app_config)
+    nim_config = config_from_branch(branch_config)
+    nim_config.container_id = app_config.stt.canary_container_id
+    nim_config.nim_tags_selector = app_config.stt.canary_tags_selector
+    nim_config.http_port = app_config.stt.canary_http_port
+    nim_config.grpc_port = app_config.stt.canary_grpc_port
+    nim_config.startup_timeout_sec = max(
+        app_config.stt.canary_startup_timeout_sec,
+        branch_config.nim_startup_timeout_sec,
+    )
+    ensure_nim_runtime(nim_config)
+
+
+def ensure_confirm_runtime_for_app_config(app_config: AppConfig) -> None:
+    branch_config = get_primary_branch_config(app_config)
+    if (branch_config.translation_direction or "").strip().lower() != "ru_to_en":
+        return
+
+    nim_config = config_from_branch(branch_config)
+    nim_config.grpc_port = 50061
+    try:
+        ensure_nim_runtime(nim_config)
+    except Exception:
+        # Confirm-pass can degrade to boundary fallback if the auxiliary NIM
+        # runtime is not available yet.
+        return
 
 
 def ensure_riva_runtime_for_app_config(app_config: AppConfig) -> None:
