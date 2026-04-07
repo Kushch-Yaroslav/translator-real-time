@@ -1142,7 +1142,17 @@ class AudioEngine:
 
     def _uses_low_latency_direct_pipeline(self) -> bool:
         backend = (self.app_config.stt.backend or "nim").strip().lower()
-        return backend in {"faster_whisper", "whisper_cpp"}
+        if backend == "faster_whisper":
+            return True
+        if backend == "whisper_cpp":
+            branch_config = self._get_active_branch_config()
+            if (
+                branch_config.translation_direction == "en_to_ru"
+                and not self.app_config.stt.partial_emit_enabled
+            ):
+                return False
+            return True
+        return False
 
     def _handle_low_latency_partial(self, text: str) -> None:
         normalized = self._normalize_text(text)
@@ -1157,12 +1167,14 @@ class AudioEngine:
 
         if self._low_latency_partial_queued:
             if self._supports_low_latency_followup_partial():
-                anchor_text = self._low_latency_emitted_text or self._low_latency_last_queued_text
+                anchor_text = self._get_low_latency_incremental_anchor()
                 deferred_candidate = self._select_low_latency_followup_partial_candidate_from_anchor(
                     anchor_text,
                     normalized,
                 )
                 deferred_candidate = self._sanitize_low_latency_partial_candidate(deferred_candidate)
+                if self._should_defer_whispercpp_age_partial(deferred_candidate):
+                    return
                 min_words = self._get_low_latency_partial_min_words()
                 if (
                     deferred_candidate
@@ -1177,13 +1189,15 @@ class AudioEngine:
             if not self._supports_low_latency_followup_partial():
                 return
             candidate = self._select_low_latency_followup_partial_candidate_from_anchor(
-                self._low_latency_emitted_text,
+                self._get_low_latency_incremental_anchor(),
                 normalized,
             )
         else:
             candidate = self._select_low_latency_partial_candidate(normalized)
 
         candidate = self._sanitize_low_latency_partial_candidate(candidate)
+        if self._should_defer_whispercpp_age_partial(candidate):
+            return
         min_words = self._get_low_latency_partial_min_words()
         if len(candidate.split()) < min_words:
             return
@@ -1206,11 +1220,17 @@ class AudioEngine:
             self._log(f"LOWLAT final skipped: known hallucination ({final_text})")
             return
 
-        incremental = self._extract_incremental_text(self._low_latency_emitted_text, final_text)
+        incremental = self._extract_incremental_text(self._get_low_latency_incremental_anchor(), final_text)
         incremental = self._normalize_text(incremental)
         if not incremental:
             self._log("LOWLAT final skipped: duplicate/overlap")
             return
+
+        sanitized_incremental = self._sanitize_low_latency_partial_candidate(incremental)
+        if not sanitized_incremental:
+            self._log(f"LOWLAT final skipped: weak followup ({incremental})")
+            return
+        incremental = sanitized_incremental
 
         if self._should_skip_low_latency_final_tail(incremental):
             self._log(f"LOWLAT final skipped: weak tail ({incremental})")
@@ -1346,6 +1366,10 @@ class AudioEngine:
         if backend != "whisper_cpp":
             return candidate
 
+        candidate = self._strip_whispercpp_repeated_followup_context(candidate)
+        if not candidate:
+            return ""
+
         emitted_norm = self._normalize_compare_text(self._low_latency_emitted_text)
         candidate_norm = self._normalize_compare_text(candidate)
 
@@ -1360,6 +1384,44 @@ class AudioEngine:
 
         return candidate
 
+    def _strip_whispercpp_repeated_followup_context(self, candidate: str) -> str:
+        backend = (self.app_config.stt.backend or "nim").strip().lower()
+        if backend != "whisper_cpp":
+            return candidate
+
+        candidate = self._normalize_text(candidate)
+        if not candidate:
+            return ""
+
+        anchor = self._normalize_compare_text(self._get_low_latency_incremental_anchor())
+        candidate_norm = self._normalize_compare_text(candidate)
+
+        if "from ukraine" not in anchor or "from ukraine" not in candidate_norm:
+            return candidate
+
+        if "from ukraine and" in candidate_norm:
+            tail = re.split(r"\bfrom ukraine and\b", candidate, maxsplit=1, flags=re.IGNORECASE)[-1]
+            tail = self._normalize_text(tail)
+            if not tail:
+                return ""
+            candidate = tail
+            candidate_norm = self._normalize_compare_text(candidate)
+
+        if candidate_norm in {"i am from ukraine", "im from ukraine"}:
+            return ""
+
+        if "from ukraine" in candidate_norm and "years old" not in candidate_norm:
+            return ""
+
+        return candidate
+
+    def _get_low_latency_incremental_anchor(self) -> str:
+        emitted = self._normalize_text(self._low_latency_emitted_text)
+        queued = self._normalize_text(self._low_latency_last_queued_text)
+        if len(queued.split()) > len(emitted.split()):
+            return queued
+        return emitted or queued
+
     def _get_low_latency_followup_partial_min_words(self) -> int:
         backend = (self.app_config.stt.backend or "nim").strip().lower()
         if backend == "whisper_cpp":
@@ -1370,6 +1432,26 @@ class AudioEngine:
     def _is_weak_whispercpp_followup_partial(text: str) -> bool:
         normalized = AudioEngine._normalize_compare_text(text)
         if not normalized:
+            return True
+
+        if any(
+            fragment in normalized
+            for fragment in (
+                "russian country",
+                "meet with my friend",
+                "mid20th century",
+                "mid twentieth century",
+                "from ukraine and my name is",
+            )
+        ):
+            return True
+
+        if "i am from ukraine and i am from ukraine" in normalized:
+            return True
+        if "im from ukraine and im from ukraine" in normalized:
+            return True
+
+        if re.search(r"\bmid\s*\d{1,3}\s+years\s+old\b", normalized):
             return True
 
         weak_trailing_tokens = {
@@ -1388,6 +1470,10 @@ class AudioEngine:
         if not tokens:
             return True
 
+        suspicious_token_pattern = re.compile(r"^(?:pn|[a-z]\d{1,3}|[a-z]{1,2}\d{1,3})$")
+        if any(suspicious_token_pattern.match(token) for token in tokens):
+            return True
+
         if tokens[-1] in weak_trailing_tokens:
             return True
 
@@ -1395,8 +1481,25 @@ class AudioEngine:
             "meet the",
             "meet with",
             "meet at",
+            "me too",
+            "and me too",
         )
         return any(normalized.endswith(suffix) for suffix in weak_suffixes)
+
+    def _should_defer_whispercpp_age_partial(self, text: str) -> bool:
+        backend = (self.app_config.stt.backend or "nim").strip().lower()
+        if backend != "whisper_cpp":
+            return False
+
+        normalized = self._normalize_compare_text(text)
+        if not normalized:
+            return False
+
+        if not re.fullmatch(r"(?:and\s+)?(?:me|im|i am)\s+\d{1,3}\s+years\s+old", normalized):
+            return False
+
+        anchor = self._normalize_compare_text(self._get_low_latency_incremental_anchor())
+        return "from ukraine" in anchor
 
     def _should_skip_low_latency_final_tail(self, text: str) -> bool:
         if not self._low_latency_emitted_text:

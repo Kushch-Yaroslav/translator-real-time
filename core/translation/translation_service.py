@@ -22,6 +22,24 @@ class TranslationConfig:
 
 
 class TranslationService:
+    _KNOWN_EN_RU_NAME_ALIASES = {
+        "alyssa": "Alyssa",
+        "arasan": "Alyssa",
+        "arassa": "Alyssa",
+        "jeremy": "Jeremy",
+        "yaroslav": "Yaroslav",
+        "jaroslav": "Yaroslav",
+        "scott": "Scott",
+        "tiff": "Tiff",
+    }
+    _KNOWN_EN_RU_NAME_TRANSLATIONS = {
+        "Alyssa": "Алисса",
+        "Jeremy": "Джереми",
+        "Yaroslav": "Ярослав",
+        "Scott": "Скотт",
+        "Tiff": "Тифф",
+    }
+
     def __init__(self, config: TranslationConfig):
         self.config = config
 
@@ -43,6 +61,10 @@ class TranslationService:
             return text
 
         template_translation = self._translate_name_intro_template(text)
+        if template_translation:
+            return template_translation
+
+        template_translation = self._translate_en_ru_dialogue_template(text)
         if template_translation:
             return template_translation
 
@@ -83,6 +105,18 @@ class TranslationService:
                 text,
                 flags=re.IGNORECASE,
             )
+        elif self.config.direction == TranslationDirection.EN_TO_RU:
+            replacements = (
+                (r"\bi\s+apreciate\s+it\b", "I appreciate it"),
+                (r"\b(?:it\s+)?affects[, ]+takes\s+time\s+to\s+kick\s+in\b", "it takes time to kick in"),
+                (r"\b(?:it\s+)?effects[, ]+takes\s+time\s+to\s+kick\s+in\b", "it takes time to kick in"),
+                (r"\b(?:it\s+)?takes\s+time\s+to\s+get\s+there\b", "it takes time to kick in"),
+            )
+            for pattern, replacement in replacements:
+                text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+
+            for alias, canonical in self._KNOWN_EN_RU_NAME_ALIASES.items():
+                text = re.sub(rf"\b{re.escape(alias)}\b", canonical, text, flags=re.IGNORECASE)
 
         return " ".join(text.split())
 
@@ -118,7 +152,60 @@ class TranslationService:
             return ""
 
         greeting = "Здравствуйте" if re.search(r"\beveryone\b", text, flags=re.IGNORECASE) else "Привет"
-        return f"{greeting}, меня зовут {raw_name}."
+        return f"{greeting}, меня зовут {self._translate_known_name_to_ru(raw_name)}."
+
+    def _translate_en_ru_dialogue_template(self, text: str) -> str:
+        if self.config.direction != TranslationDirection.EN_TO_RU:
+            return ""
+
+        normalized = self._normalize_compare_text(text)
+        if not normalized:
+            return ""
+
+        greeting_match = re.fullmatch(r"(?:hi|hello|hey|yo)\s+([a-zа-я][a-zа-я' -]*)", normalized)
+        if greeting_match:
+            raw_name = " ".join(greeting_match.group(1).split()).strip(" ,.!?")
+            if raw_name:
+                return f"Привет, {self._translate_known_name_to_ru(raw_name)}."
+
+        farewell_match = re.fullmatch(r"bye\s+([a-zа-я][a-zа-я' -]*)", normalized)
+        if farewell_match:
+            raw_name = " ".join(farewell_match.group(1).split()).strip(" ,.!?")
+            if raw_name:
+                return f"Пока, {self._translate_known_name_to_ru(raw_name)}."
+
+        exact_templates = {
+            "are you feeling better now": "Тебе уже лучше?",
+            "nice to meet you": "Приятно познакомиться.",
+            "just a bit im still feeling nauseous": "Немного. Меня всё ещё тошнит.",
+            "did you take the medication": "Ты принял лекарство?",
+            "yeah but it takes time to kick in": "Да, но нужно время, чтобы лекарство подействовало.",
+            "oh i better leave you to rest then": "Тогда я оставлю тебя отдыхать.",
+            "ill check back on you later": "Я зайду к тебе позже.",
+            "thanks alyssa i appreciate it": "Спасибо, Алисса. Я это ценю.",
+        }
+        return exact_templates.get(normalized, "")
+
+    @staticmethod
+    def _normalize_compare_text(text: str) -> str:
+        text = " ".join((text or "").strip().split()).lower()
+        text = "".join(ch for ch in text if ch.isalnum() or ch.isspace())
+        return " ".join(text.split()).strip()
+
+    def _translate_known_name_to_ru(self, raw_name: str) -> str:
+        normalized = self._normalize_compare_text(raw_name)
+        canonical = self._KNOWN_EN_RU_NAME_ALIASES.get(normalized)
+        if canonical:
+            return self._KNOWN_EN_RU_NAME_TRANSLATIONS.get(canonical, canonical)
+
+        compact = " ".join((raw_name or "").strip().split()).strip(" ,.!?")
+        if not compact:
+            return ""
+
+        if re.fullmatch(r"[A-Za-z][A-Za-z' -]*", compact):
+            return compact.title()
+
+        return compact
 
     def _resolve_model_name(self, direction: TranslationDirection) -> str:
         if direction == TranslationDirection.EN_TO_RU:

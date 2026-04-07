@@ -111,6 +111,69 @@ def test_whispercpp_skips_weak_meet_the_followup_partial() -> None:
     assert engine._sanitize_low_latency_partial_candidate("I'm from Ukraine and meet the") == ""
 
 
+def test_whispercpp_skips_weak_me_too_followup_partial() -> None:
+    engine = _build_engine("en_to_ru", backend="whisper_cpp")
+
+    assert engine._sanitize_low_latency_partial_candidate("I'm from Ukraine and me too.") == ""
+
+
+def test_whispercpp_skips_russian_country_followup_partial() -> None:
+    engine = _build_engine("en_to_ru", backend="whisper_cpp")
+
+    assert engine._sanitize_low_latency_partial_candidate("P26 is a Russian country.") == ""
+
+
+def test_whispercpp_skips_mid_century_followup_partial() -> None:
+    engine = _build_engine("en_to_ru", backend="whisper_cpp")
+
+    assert (
+        engine._sanitize_low_latency_partial_candidate("I'm from Ukraine and mid-20th century.")
+        == ""
+    )
+
+
+def test_whispercpp_skips_mi26_followup_partial() -> None:
+    engine = _build_engine("en_to_ru", backend="whisper_cpp")
+
+    assert engine._sanitize_low_latency_partial_candidate("I am from Ukraine and Mi-26.") == ""
+
+
+def test_whispercpp_skips_repeated_name_in_followup_partial() -> None:
+    engine = _build_engine("en_to_ru", backend="whisper_cpp")
+
+    assert (
+        engine._sanitize_low_latency_partial_candidate("I'm from Ukraine and my name is Jaroslav.")
+        == ""
+    )
+
+
+def test_whispercpp_defers_age_only_partial_after_from_ukraine_anchor() -> None:
+    engine = _build_engine("en_to_ru", backend="whisper_cpp")
+    engine._low_latency_last_queued_text = "I am from Ukraine."
+
+    assert engine._should_defer_whispercpp_age_partial("and me 26 years old") is True
+
+
+def test_whispercpp_strips_repeated_from_ukraine_context_from_followup() -> None:
+    engine = _build_engine("en_to_ru", backend="whisper_cpp")
+    engine._low_latency_last_queued_text = "I am from Ukraine."
+
+    assert (
+        engine._sanitize_low_latency_partial_candidate("I'm from Ukraine and I'm 26 years old.")
+        == "I'm 26 years old."
+    )
+
+
+def test_whispercpp_skips_pure_repeated_from_ukraine_followup() -> None:
+    engine = _build_engine("en_to_ru", backend="whisper_cpp")
+    engine._low_latency_last_queued_text = "I am from Ukraine."
+
+    assert (
+        engine._sanitize_low_latency_partial_candidate("I am from Ukraine and I am from Ukraine.")
+        == ""
+    )
+
+
 def test_extract_incremental_text_handles_intro_overlap_variation() -> None:
     previous = "Hello, my name is Yaroslav."
     current = "Hello everyone, my name is Yaroslav. I am from Ukraine and me 26 years old."
