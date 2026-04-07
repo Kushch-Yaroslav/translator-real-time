@@ -21,6 +21,7 @@ class STTConfig:
     backend: str = "nim"
     base_url: str = "http://localhost:9000"
     ws_url: str = "ws://localhost:9000/v1/realtime?intent=transcription"
+    nemotron_ws_url: str = "ws://localhost:8765/stream"
     riva_uri: str = "localhost:50051"
     riva_use_ssl: bool = False
     riva_ssl_cert_path: str = ""

@@ -105,6 +105,7 @@ class AudioEngine:
         self._low_latency_emitted_text = ""
         self._low_latency_last_queued_text = ""
         self._low_latency_partial_queued = False
+        self._low_latency_deferred_partial_text = ""
 
     def start(
             self,
@@ -1138,7 +1139,7 @@ class AudioEngine:
 
     def _uses_low_latency_direct_pipeline(self) -> bool:
         backend = (self.app_config.stt.backend or "nim").strip().lower()
-        return backend == "faster_whisper"
+        return backend in {"faster_whisper", "nemotron"}
 
     def _handle_low_latency_partial(self, text: str) -> None:
         normalized = self._normalize_text(text)
@@ -1152,14 +1153,34 @@ class AudioEngine:
             self._low_latency_partial_repeat_count = 1
 
         if self._low_latency_partial_queued:
+            if self._supports_low_latency_followup_partial():
+                anchor_text = self._low_latency_emitted_text or self._low_latency_last_queued_text
+                deferred_candidate = self._select_low_latency_followup_partial_candidate_from_anchor(
+                    anchor_text,
+                    normalized,
+                )
+                min_words = self._get_low_latency_partial_min_words()
+                if (
+                    deferred_candidate
+                    and len(deferred_candidate.split()) >= min_words
+                    and self._normalize_compare_text(deferred_candidate)
+                    != self._normalize_compare_text(self._low_latency_last_queued_text)
+                ):
+                    self._low_latency_deferred_partial_text = deferred_candidate
             return
 
         if self._low_latency_emitted_text:
-            return
+            if not self._supports_low_latency_followup_partial():
+                return
+            candidate = self._select_low_latency_followup_partial_candidate_from_anchor(
+                self._low_latency_emitted_text,
+                normalized,
+            )
+        else:
+            candidate = self._select_low_latency_partial_candidate(normalized)
 
-        candidate = self._select_low_latency_partial_candidate(normalized)
-
-        if len(candidate.split()) < max(5, self.app_config.stt.partial_min_words):
+        min_words = self._get_low_latency_partial_min_words()
+        if len(candidate.split()) < min_words:
             return
 
         if self._normalize_compare_text(candidate) == self._normalize_compare_text(self._low_latency_last_queued_text):
@@ -1233,6 +1254,27 @@ class AudioEngine:
             self._low_latency_partial_repeat_count = 0
             self._low_latency_last_queued_text = ""
             self._low_latency_partial_queued = False
+            self._low_latency_deferred_partial_text = ""
+            return
+
+        if self._supports_low_latency_followup_partial():
+            self._low_latency_partial_queued = False
+            deferred_candidate = self._normalize_text(self._low_latency_deferred_partial_text)
+            self._low_latency_deferred_partial_text = ""
+            if (
+                deferred_candidate
+                and self._normalize_compare_text(deferred_candidate)
+                != self._normalize_compare_text(self._low_latency_last_queued_text)
+            ):
+                self._low_latency_generation += 1
+                self._low_latency_last_queued_text = deferred_candidate
+                self._low_latency_partial_queued = True
+                self._log(f"LOWLAT partial queued: {deferred_candidate}")
+                self._enqueue_low_latency_text(
+                    deferred_candidate,
+                    is_final=False,
+                    generation=self._low_latency_generation,
+                )
 
     def _select_low_latency_partial_candidate(self, normalized: str) -> str:
         completed_sentences, _ = self._split_sentences(normalized)
@@ -1241,6 +1283,43 @@ class AudioEngine:
 
         if self._low_latency_partial_repeat_count >= 2 and len(normalized.split()) >= 6:
             return normalized
+
+        return ""
+
+    def _supports_low_latency_followup_partial(self) -> bool:
+        backend = (self.app_config.stt.backend or "nim").strip().lower()
+        return backend == "nemotron"
+
+    def _get_low_latency_partial_min_words(self) -> int:
+        if self._low_latency_emitted_text and self._supports_low_latency_followup_partial():
+            return max(4, self.app_config.stt.partial_min_words)
+        return max(5, self.app_config.stt.partial_min_words)
+
+    def _select_low_latency_followup_partial_candidate(self, normalized: str) -> str:
+        return self._select_low_latency_followup_partial_candidate_from_anchor(
+            self._low_latency_emitted_text,
+            normalized,
+        )
+
+    def _select_low_latency_followup_partial_candidate_from_anchor(
+        self,
+        anchor_text: str,
+        normalized: str,
+    ) -> str:
+        incremental = self._extract_incremental_text(anchor_text, normalized)
+        incremental = self._normalize_text(incremental)
+        if not incremental:
+            return ""
+
+        completed_sentences, trailing_fragment = self._split_sentences(incremental)
+        if completed_sentences:
+            return self._normalize_text(" ".join(completed_sentences))
+
+        if len(incremental.split()) >= max(5, self.app_config.stt.partial_min_words):
+            return incremental
+
+        if trailing_fragment and len(trailing_fragment.split()) >= max(5, self.app_config.stt.partial_min_words):
+            return trailing_fragment
 
         return ""
 
@@ -1552,6 +1631,10 @@ class AudioEngine:
         if current_norm == previous_norm:
             return ""
 
+        intro_continuation = AudioEngine._extract_intro_continuation(previous, current)
+        if intro_continuation:
+            return intro_continuation
+
         if current_norm.startswith(previous_norm):
             extra_raw = current[len(previous):].strip()
             if extra_raw:
@@ -1591,6 +1674,25 @@ class AudioEngine:
                 return " ".join(raw for raw, _ in current_tokens[overlap_end:]).strip()
 
         return current.strip()
+
+    @staticmethod
+    def _extract_intro_continuation(previous: str, current: str) -> str:
+        previous_norm = AudioEngine._normalize_compare_text(previous)
+        current_norm = AudioEngine._normalize_compare_text(current)
+        if "my name is" not in previous_norm or "my name is" not in current_norm:
+            return ""
+
+        current_text = AudioEngine._normalize_text(current)
+        continuation_match = re.search(
+            r"\b(I am|I'm|I’m|from|me\s+\d+)\b",
+            current_text,
+            flags=re.IGNORECASE,
+        )
+        if not continuation_match:
+            return ""
+
+        continuation = current_text[continuation_match.start():].strip(" ,.")
+        return continuation
 
     @staticmethod
     def _tokenize_compare_words(text: str) -> list[tuple[str, str]]:

@@ -9,6 +9,10 @@ from core.sst.faster_whisper_realtime_stt_service import (
     FasterWhisperRealtimeSTTConfig,
     FasterWhisperRealtimeSTTService,
 )
+from core.sst.nemotron_realtime_stt_service import (
+    NemotronRealtimeSTTConfig,
+    NemotronRealtimeSTTService,
+)
 from core.sst.nim_realtime_stt_service import (
     NIMRealtimeSTTConfig,
     NIMRealtimeSTTService,
@@ -48,6 +52,19 @@ def create_realtime_stt_service(
                 )
             ),
             "Silero VAD + faster-whisper",
+        )
+
+    if backend == "nemotron":
+        return (
+            NemotronRealtimeSTTService(
+                NemotronRealtimeSTTConfig(
+                    ws_url=app_config.stt.nemotron_ws_url,
+                    sample_rate_hz=app_config.stt.sample_rate_hz,
+                    timeout=app_config.stt.timeout,
+                    on_log=on_log,
+                )
+            ),
+            "NVIDIA Nemotron streaming",
         )
 
     if backend == "canary_ast":

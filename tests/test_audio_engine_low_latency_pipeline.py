@@ -38,6 +38,12 @@ def test_low_latency_direct_pipeline_disabled_for_non_faster_whisper() -> None:
     assert engine._uses_low_latency_direct_pipeline() is False
 
 
+def test_low_latency_direct_pipeline_enabled_for_nemotron_en_to_ru() -> None:
+    engine = _build_engine("en_to_ru", backend="nemotron")
+
+    assert engine._uses_low_latency_direct_pipeline() is True
+
+
 def test_en_to_ru_partial_candidate_can_emit_first_completed_sentence() -> None:
     engine = _build_engine("en_to_ru")
 
@@ -70,3 +76,44 @@ def test_extract_incremental_text_handles_intro_overlap_variation() -> None:
         AudioEngine._extract_incremental_text(previous, current)
         == "I am from Ukraine and me 26 years old."
     )
+
+
+def test_extract_incremental_text_drops_repeated_name_when_intro_name_changes() -> None:
+    previous = "Hello, my name is Ericka."
+    current = "Hello, my name is Yeroslav. I am from Ukraine and me 26 years old."
+
+    assert (
+        AudioEngine._extract_incremental_text(previous, current)
+        == "I am from Ukraine and me 26 years old"
+    )
+
+
+def test_nemotron_followup_partial_candidate_uses_incremental_continuation() -> None:
+    engine = _build_engine("en_to_ru", backend="nemotron")
+    engine._low_latency_emitted_text = "Hello, my name is Yaroslav."
+
+    assert (
+        engine._select_low_latency_followup_partial_candidate(
+            "Hello, my name is Yaroslav. I am from Ukraine and me 26 years old"
+        )
+        == "I am from Ukraine and me 26 years old"
+    )
+
+
+def test_nemotron_followup_partial_min_words_allows_four_word_continuation() -> None:
+    engine = _build_engine("en_to_ru", backend="nemotron")
+    engine._low_latency_emitted_text = "Hello, my name is Yaroslav."
+
+    assert engine._get_low_latency_partial_min_words() == 4
+
+
+def test_nemotron_can_defer_followup_partial_while_first_chunk_is_in_flight() -> None:
+    engine = _build_engine("en_to_ru", backend="nemotron")
+    engine._low_latency_last_queued_text = "Hello, my name is Yaroslav."
+    engine._low_latency_partial_queued = True
+
+    engine._handle_low_latency_partial(
+        "Hello, my name is Yaroslav. I am from Ukraine and me 26 years old"
+    )
+
+    assert engine._low_latency_deferred_partial_text == "I am from Ukraine and me 26 years old"

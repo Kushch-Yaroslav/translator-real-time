@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+from urllib.parse import urlparse
 
 from core.app_config import AppConfig, get_primary_branch_config, load_app_config
 from core.nim_runtime import config_from_branch, ensure_nim_runtime, ensure_nim_runtime_for_app_config
@@ -11,6 +12,10 @@ def ensure_stt_runtime_for_app_config(app_config: AppConfig | None = None) -> No
     backend = (app_config.stt.backend or "nim").strip().lower()
 
     if backend == "faster_whisper":
+        return
+
+    if backend == "nemotron":
+        ensure_nemotron_runtime_for_app_config(app_config)
         return
 
     if backend == "canary_ast":
@@ -81,3 +86,21 @@ def _is_tcp_port_open(host: str, port: int) -> bool:
             return True
     except OSError:
         return False
+
+
+def ensure_nemotron_runtime_for_app_config(app_config: AppConfig) -> None:
+    ws_url = (app_config.stt.nemotron_ws_url or "").strip()
+    if not ws_url:
+        raise RuntimeError(
+            "Nemotron websocket URL is empty. Set `stt.nemotron_ws_url`, "
+            "for example `ws://localhost:8765/stream`."
+        )
+
+    parsed = urlparse(ws_url)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or (443 if parsed.scheme == "wss" else 80)
+    if not _is_tcp_port_open(host, port):
+        raise RuntimeError(
+            f"Nemotron server is not reachable at {host}:{port}. "
+            "Start `scripts/start_nemotron_server.sh` first."
+        )

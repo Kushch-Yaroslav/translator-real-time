@@ -199,6 +199,7 @@ class MainWindow(QWidget):
         self.stt_backend_combo.addItem("NVIDIA Riva", "riva")
         self.stt_backend_combo.addItem("Silero VAD + faster-whisper", "faster_whisper")
         self.stt_backend_combo.addItem("NVIDIA Canary AST", "canary_ast")
+        self.stt_backend_combo.addItem("NVIDIA Nemotron Streaming", "nemotron")
         self.commit_interval_spin = self._build_double_spin(0.1, 2.0, 0.05, 2)
         self.final_debounce_spin = self._build_double_spin(0.1, 2.0, 0.05, 2)
         self.partial_stability_spin = self._build_double_spin(0.1, 2.0, 0.05, 2)
