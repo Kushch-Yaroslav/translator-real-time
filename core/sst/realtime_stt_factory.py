@@ -9,10 +9,6 @@ from core.sst.faster_whisper_realtime_stt_service import (
     FasterWhisperRealtimeSTTConfig,
     FasterWhisperRealtimeSTTService,
 )
-from core.sst.nemotron_realtime_stt_service import (
-    NemotronRealtimeSTTConfig,
-    NemotronRealtimeSTTService,
-)
 from core.sst.nim_realtime_stt_service import (
     NIMRealtimeSTTConfig,
     NIMRealtimeSTTService,
@@ -22,8 +18,10 @@ from core.sst.riva_realtime_stt_service import (
     RivaRealtimeSTTConfig,
     RivaRealtimeSTTService,
 )
-
-
+from core.sst.whispercpp_realtime_stt_service import (
+    WhisperCppRealtimeSTTConfig,
+    WhisperCppRealtimeSTTService,
+)
 def create_realtime_stt_service(
     app_config: AppConfig,
     branch_config: TranslationBranchConfig,
@@ -52,19 +50,6 @@ def create_realtime_stt_service(
                 )
             ),
             "Silero VAD + faster-whisper",
-        )
-
-    if backend == "nemotron":
-        return (
-            NemotronRealtimeSTTService(
-                NemotronRealtimeSTTConfig(
-                    ws_url=app_config.stt.nemotron_ws_url,
-                    sample_rate_hz=app_config.stt.sample_rate_hz,
-                    timeout=app_config.stt.timeout,
-                    on_log=on_log,
-                )
-            ),
-            "NVIDIA Nemotron streaming",
         )
 
     if backend == "canary_ast":
@@ -105,6 +90,26 @@ def create_realtime_stt_service(
                 )
             ),
             "NVIDIA Riva gRPC",
+        )
+
+    if backend == "whisper_cpp":
+        return (
+            WhisperCppRealtimeSTTService(
+                WhisperCppRealtimeSTTConfig(
+                    base_url=app_config.stt.whispercpp_base_url,
+                    language="en" if branch_config.stt_language.lower().startswith("en") else "ru",
+                    sample_rate_hz=app_config.stt.sample_rate_hz,
+                    partial_interval_sec=app_config.stt.silero_partial_interval_sec,
+                    min_window_sec=app_config.stt.silero_min_window_sec,
+                    max_window_sec=app_config.stt.silero_max_window_sec,
+                    min_silence_duration_ms=app_config.stt.silero_min_silence_ms,
+                    speech_pad_ms=app_config.stt.silero_speech_pad_ms,
+                    speech_threshold=app_config.stt.silero_speech_threshold,
+                    timeout=max(10.0, app_config.stt.timeout),
+                    on_log=on_log,
+                )
+            ),
+            "whisper.cpp HTTP + Silero VAD",
         )
 
     return (

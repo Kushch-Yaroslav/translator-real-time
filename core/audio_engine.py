@@ -40,6 +40,9 @@ class AudioEngine:
     _KNOWN_STANDALONE_STT_HALLUCINATIONS = frozenset({
         "продолжение следует",
     })
+    _KNOWN_EN_STANDALONE_STT_HALLUCINATIONS = frozenset({
+        "welcome to the american league of legends",
+    })
 
     def __init__(self, app_config: AppConfig | None = None):
         self.session: Optional[AudioSession] = None
@@ -1139,7 +1142,7 @@ class AudioEngine:
 
     def _uses_low_latency_direct_pipeline(self) -> bool:
         backend = (self.app_config.stt.backend or "nim").strip().lower()
-        return backend in {"faster_whisper", "nemotron"}
+        return backend in {"faster_whisper", "whisper_cpp"}
 
     def _handle_low_latency_partial(self, text: str) -> None:
         normalized = self._normalize_text(text)
@@ -1159,6 +1162,7 @@ class AudioEngine:
                     anchor_text,
                     normalized,
                 )
+                deferred_candidate = self._sanitize_low_latency_partial_candidate(deferred_candidate)
                 min_words = self._get_low_latency_partial_min_words()
                 if (
                     deferred_candidate
@@ -1179,6 +1183,7 @@ class AudioEngine:
         else:
             candidate = self._select_low_latency_partial_candidate(normalized)
 
+        candidate = self._sanitize_low_latency_partial_candidate(candidate)
         min_words = self._get_low_latency_partial_min_words()
         if len(candidate.split()) < min_words:
             return
@@ -1195,6 +1200,10 @@ class AudioEngine:
     def _handle_low_latency_final(self, text: str) -> None:
         final_text = self._normalize_text(text)
         if not final_text:
+            return
+
+        if self._should_skip_known_low_latency_source_hallucination(final_text):
+            self._log(f"LOWLAT final skipped: known hallucination ({final_text})")
             return
 
         incremental = self._extract_incremental_text(self._low_latency_emitted_text, final_text)
@@ -1266,6 +1275,9 @@ class AudioEngine:
                 and self._normalize_compare_text(deferred_candidate)
                 != self._normalize_compare_text(self._low_latency_last_queued_text)
             ):
+                deferred_candidate = self._sanitize_low_latency_partial_candidate(deferred_candidate)
+                if not deferred_candidate:
+                    return
                 self._low_latency_generation += 1
                 self._low_latency_last_queued_text = deferred_candidate
                 self._low_latency_partial_queued = True
@@ -1288,10 +1300,11 @@ class AudioEngine:
 
     def _supports_low_latency_followup_partial(self) -> bool:
         backend = (self.app_config.stt.backend or "nim").strip().lower()
-        return backend == "nemotron"
+        return backend in {"whisper_cpp"}
 
     def _get_low_latency_partial_min_words(self) -> int:
-        if self._low_latency_emitted_text and self._supports_low_latency_followup_partial():
+        backend = (self.app_config.stt.backend or "nim").strip().lower()
+        if backend == "whisper_cpp":
             return max(4, self.app_config.stt.partial_min_words)
         return max(5, self.app_config.stt.partial_min_words)
 
@@ -1315,13 +1328,75 @@ class AudioEngine:
         if completed_sentences:
             return self._normalize_text(" ".join(completed_sentences))
 
-        if len(incremental.split()) >= max(5, self.app_config.stt.partial_min_words):
+        followup_min_words = self._get_low_latency_followup_partial_min_words()
+        if len(incremental.split()) >= followup_min_words:
             return incremental
 
-        if trailing_fragment and len(trailing_fragment.split()) >= max(5, self.app_config.stt.partial_min_words):
+        if trailing_fragment and len(trailing_fragment.split()) >= followup_min_words:
             return trailing_fragment
 
         return ""
+
+    def _sanitize_low_latency_partial_candidate(self, candidate: str) -> str:
+        candidate = self._normalize_text(candidate)
+        if not candidate:
+            return ""
+
+        backend = (self.app_config.stt.backend or "nim").strip().lower()
+        if backend != "whisper_cpp":
+            return candidate
+
+        emitted_norm = self._normalize_compare_text(self._low_latency_emitted_text)
+        candidate_norm = self._normalize_compare_text(candidate)
+
+        if emitted_norm and "my name is" in emitted_norm and "my name is" in candidate_norm:
+            continuation = self._extract_intro_continuation(self._low_latency_emitted_text, candidate)
+            continuation = self._normalize_text(continuation)
+            if continuation:
+                candidate = continuation
+
+        if self._is_weak_whispercpp_followup_partial(candidate):
+            return ""
+
+        return candidate
+
+    def _get_low_latency_followup_partial_min_words(self) -> int:
+        backend = (self.app_config.stt.backend or "nim").strip().lower()
+        if backend == "whisper_cpp":
+            return max(4, self.app_config.stt.partial_min_words)
+        return max(5, self.app_config.stt.partial_min_words)
+
+    @staticmethod
+    def _is_weak_whispercpp_followup_partial(text: str) -> bool:
+        normalized = AudioEngine._normalize_compare_text(text)
+        if not normalized:
+            return True
+
+        weak_trailing_tokens = {
+            "a",
+            "an",
+            "and",
+            "at",
+            "for",
+            "meet",
+            "of",
+            "the",
+            "to",
+            "with",
+        }
+        tokens = normalized.split()
+        if not tokens:
+            return True
+
+        if tokens[-1] in weak_trailing_tokens:
+            return True
+
+        weak_suffixes = (
+            "meet the",
+            "meet with",
+            "meet at",
+        )
+        return any(normalized.endswith(suffix) for suffix in weak_suffixes)
 
     def _should_skip_low_latency_final_tail(self, text: str) -> bool:
         if not self._low_latency_emitted_text:
@@ -1346,6 +1421,20 @@ class AudioEngine:
             "ты",
         }
         return normalized in weak_single_word_tails
+
+    def _should_skip_known_low_latency_source_hallucination(self, text: str) -> bool:
+        if self._low_latency_emitted_text:
+            return False
+
+        branch_config = self._get_active_branch_config()
+        if branch_config.translation_direction != "en_to_ru":
+            return False
+
+        normalized = self._normalize_compare_text(text)
+        if not normalized:
+            return True
+
+        return normalized in self._KNOWN_EN_STANDALONE_STT_HALLUCINATIONS
 
     def _get_partial_stability_window_sec(self) -> float:
         if self._uses_sentence_partial_streaming():

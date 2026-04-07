@@ -21,7 +21,7 @@ class STTConfig:
     backend: str = "nim"
     base_url: str = "http://localhost:9000"
     ws_url: str = "ws://localhost:9000/v1/realtime?intent=transcription"
-    nemotron_ws_url: str = "ws://localhost:8765/stream"
+    whispercpp_base_url: str = "http://127.0.0.1:8178"
     riva_uri: str = "localhost:50051"
     riva_use_ssl: bool = False
     riva_ssl_cert_path: str = ""
@@ -119,7 +119,7 @@ DEFAULT_CONFIG = AppConfig(
             enabled=False,
             stt_language="ru-RU",
             translation_direction="ru_to_en",
-            tts_voice_name="en_US-lessac-medium",
+            tts_voice_name="en_US-ryan-medium",
             nim_container_id="parakeet-1-1b-rnnt-multilingual",
             nim_tags_selector="mode=str",
             nim_startup_timeout_sec=180.0,

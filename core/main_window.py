@@ -198,8 +198,8 @@ class MainWindow(QWidget):
         self.stt_backend_combo.addItem("NVIDIA NIM", "nim")
         self.stt_backend_combo.addItem("NVIDIA Riva", "riva")
         self.stt_backend_combo.addItem("Silero VAD + faster-whisper", "faster_whisper")
+        self.stt_backend_combo.addItem("whisper.cpp HTTP + Silero VAD", "whisper_cpp")
         self.stt_backend_combo.addItem("NVIDIA Canary AST", "canary_ast")
-        self.stt_backend_combo.addItem("NVIDIA Nemotron Streaming", "nemotron")
         self.commit_interval_spin = self._build_double_spin(0.1, 2.0, 0.05, 2)
         self.final_debounce_spin = self._build_double_spin(0.1, 2.0, 0.05, 2)
         self.partial_stability_spin = self._build_double_spin(0.1, 2.0, 0.05, 2)
@@ -526,7 +526,10 @@ class MainWindow(QWidget):
         config = load_app_config(profile_path)
         self._apply_config_to_ui(config)
         self._set_app_config(config)
-        self._emit_log(f"Profile loaded: {profile_path}")
+        self._emit_log(
+            f"Profile loaded: {profile_path} "
+            f"(backend={config.stt.backend}, direction={config.translation.direction})"
+        )
 
     def _reload_profiles(self, selected_path: Path | None = None) -> None:
         self.profiles_dir.mkdir(parents=True, exist_ok=True)

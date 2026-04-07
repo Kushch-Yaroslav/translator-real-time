@@ -42,6 +42,10 @@ class TranslationService:
         if not self.config.enabled or not text:
             return text
 
+        template_translation = self._translate_name_intro_template(text)
+        if template_translation:
+            return template_translation
+
         inputs = self.tokenizer(
             [text],
             return_tensors="pt",
@@ -97,6 +101,24 @@ class TranslationService:
                 text = text.replace(source, target)
 
         return " ".join(text.split())
+
+    def _translate_name_intro_template(self, text: str) -> str:
+        if self.config.direction != TranslationDirection.EN_TO_RU:
+            return ""
+
+        match = re.fullmatch(
+            r"(?is)(?:hello(?:\s+everyone)?|hi(?:\s+everyone)?)[,!\s]*my\s+name\s+is\s+(.+?)[.!?]?",
+            text.strip(),
+        )
+        if not match:
+            return ""
+
+        raw_name = " ".join(match.group(1).split()).strip(" ,.!?")
+        if not raw_name:
+            return ""
+
+        greeting = "Здравствуйте" if re.search(r"\beveryone\b", text, flags=re.IGNORECASE) else "Привет"
+        return f"{greeting}, меня зовут {raw_name}."
 
     def _resolve_model_name(self, direction: TranslationDirection) -> str:
         if direction == TranslationDirection.EN_TO_RU:

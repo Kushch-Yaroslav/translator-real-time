@@ -14,12 +14,12 @@ def ensure_stt_runtime_for_app_config(app_config: AppConfig | None = None) -> No
     if backend == "faster_whisper":
         return
 
-    if backend == "nemotron":
-        ensure_nemotron_runtime_for_app_config(app_config)
-        return
-
     if backend == "canary_ast":
         ensure_canary_runtime_for_app_config(app_config)
+        return
+
+    if backend == "whisper_cpp":
+        ensure_whispercpp_runtime_for_app_config(app_config)
         return
 
     if backend == "riva":
@@ -72,6 +72,24 @@ def ensure_riva_runtime_for_app_config(app_config: AppConfig) -> None:
         )
 
 
+def ensure_whispercpp_runtime_for_app_config(app_config: AppConfig) -> None:
+    base_url = (app_config.stt.whispercpp_base_url or "").strip()
+    if not base_url:
+        raise RuntimeError(
+            "whisper.cpp base URL is empty. Set `stt.whispercpp_base_url`, "
+            "for example `http://127.0.0.1:8178`."
+        )
+
+    parsed = urlparse(base_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not _is_tcp_port_open(host, port):
+        raise RuntimeError(
+            f"whisper.cpp server is not reachable at {host}:{port}. "
+            "Start `scripts/start_whispercpp_server.sh` first."
+        )
+
+
 def _parse_host_port(uri: str) -> tuple[str, int]:
     if ":" not in uri:
         return uri, 50051
@@ -86,21 +104,3 @@ def _is_tcp_port_open(host: str, port: int) -> bool:
             return True
     except OSError:
         return False
-
-
-def ensure_nemotron_runtime_for_app_config(app_config: AppConfig) -> None:
-    ws_url = (app_config.stt.nemotron_ws_url or "").strip()
-    if not ws_url:
-        raise RuntimeError(
-            "Nemotron websocket URL is empty. Set `stt.nemotron_ws_url`, "
-            "for example `ws://localhost:8765/stream`."
-        )
-
-    parsed = urlparse(ws_url)
-    host = parsed.hostname or "localhost"
-    port = parsed.port or (443 if parsed.scheme == "wss" else 80)
-    if not _is_tcp_port_open(host, port):
-        raise RuntimeError(
-            f"Nemotron server is not reachable at {host}:{port}. "
-            "Start `scripts/start_nemotron_server.sh` first."
-        )

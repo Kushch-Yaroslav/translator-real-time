@@ -8,10 +8,10 @@
     "blocksize": 1024
   },
   "stt": {
-    "backend": "nemotron",
+    "backend": "whisper_cpp",
     "base_url": "http://localhost:9000",
     "ws_url": "ws://localhost:9000/v1/realtime?intent=transcription",
-    "nemotron_ws_url": "ws://localhost:8765/stream",
+    "whispercpp_base_url": "http://127.0.0.1:8178",
     "riva_uri": "localhost:50051",
     "riva_use_ssl": false,
     "riva_ssl_cert_path": "",
@@ -58,18 +58,18 @@
       "tts_voice_name": "ru_RU-dmitri-medium",
       "nim_container_id": "parakeet-1-1b-ctc-en-us",
       "nim_tags_selector": "name=parakeet-1-1b-ctc-en-us,mode=str,diarizer=disabled,vad=default",
-      "nim_startup_timeout_sec": 60.0
+      "nim_startup_timeout_sec": 300.0
     },
     "secondary": {
       "branch_id": "secondary",
       "label": "RU -> EN",
-      "enabled": false,
+      "enabled": true,
       "stt_language": "ru-RU",
       "translation_direction": "ru_to_en",
-      "tts_voice_name": "en_US-lessac-medium",
+      "tts_voice_name": "en_US-ryan-medium",
       "nim_container_id": "parakeet-1-1b-rnnt-multilingual",
       "nim_tags_selector": "mode=str",
-      "nim_startup_timeout_sec": 180.0
+      "nim_startup_timeout_sec": 300.0
     }
   },
   "translation": {
