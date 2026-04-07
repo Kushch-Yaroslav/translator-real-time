@@ -94,6 +94,43 @@ def get_default_sink_name() -> Optional[str]:
         return None
 
 
+def is_virtual_translator_device(name: str) -> bool:
+    normalized = (name or "").strip().lower()
+    return normalized == TRANSLATOR_SINK_NAME or normalized == f"{TRANSLATOR_SINK_NAME}.monitor"
+
+
+def get_default_real_source_name() -> Optional[str]:
+    default_source = get_default_source_name()
+    inputs = list_input_devices()
+
+    if default_source and not default_source.endswith(".monitor") and not is_virtual_translator_device(default_source):
+        return default_source
+
+    for device in inputs:
+        if device.name.endswith(".monitor"):
+            continue
+        if is_virtual_translator_device(device.name):
+            continue
+        return device.name
+
+    return default_source
+
+
+def get_default_real_sink_name() -> Optional[str]:
+    default_sink = get_default_sink_name()
+    outputs = list_output_devices()
+
+    if default_sink and not is_virtual_translator_device(default_sink):
+        return default_sink
+
+    for device in outputs:
+        if is_virtual_translator_device(device.name):
+            continue
+        return device.name
+
+    return default_sink
+
+
 def enrich_default_flags(inputs: List[AudioDevice], outputs: List[AudioDevice]) -> None:
     default_source = get_default_source_name()
     default_sink = get_default_sink_name()
@@ -135,6 +172,113 @@ def get_translator_sink_name() -> str:
 
 def get_monitor_source_name_for_sink(sink_name: str) -> str:
     return f"{sink_name}.monitor"
+
+
+def get_sink_volume_percent(sink_name: str) -> Optional[int]:
+    try:
+        output = _run_command(["pactl", "get-sink-volume", sink_name])
+    except Exception:
+        return None
+
+    percentages = [
+        int(match.rstrip("%"))
+        for match in output.replace("/", " ").split()
+        if match.endswith("%") and match[:-1].isdigit()
+    ]
+    if not percentages:
+        return None
+
+    return int(round(sum(percentages) / len(percentages)))
+
+
+def set_sink_volume_percent(sink_name: str, percent: int) -> bool:
+    percent = max(0, min(150, int(percent)))
+    try:
+        subprocess.run(
+            ["pactl", "set-sink-volume", sink_name, f"{percent}%"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def load_source_loopback(
+    source_name: str,
+    sink_name: str,
+    *,
+    latency_msec: int = 30,
+) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            [
+                "pactl",
+                "load-module",
+                "module-loopback",
+                f"source={source_name}",
+                f"sink={sink_name}",
+                f"latency_msec={int(latency_msec)}",
+                "source_dont_move=true",
+                "sink_dont_move=true",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+
+    module_id = result.stdout.strip()
+    return module_id or None
+
+
+def unload_pulse_module(module_id: str) -> bool:
+    try:
+        subprocess.run(
+            ["pactl", "unload-module", str(module_id)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _find_sink_input_id_by_owner_module(module_id: str) -> Optional[str]:
+    for item in _list_sink_inputs():
+        if str(item.get("owner_module", "")) == str(module_id):
+            return str(item.get("index"))
+    return None
+
+
+def set_loopback_volume_percent(
+    module_id: str,
+    percent: int,
+    *,
+    retries: int = 20,
+    delay: float = 0.1,
+) -> bool:
+    percent = max(0, min(150, int(percent)))
+
+    for _ in range(retries):
+        sink_input_id = _find_sink_input_id_by_owner_module(module_id)
+        if sink_input_id:
+            try:
+                subprocess.run(
+                    ["pactl", "set-sink-input-volume", sink_input_id, f"{percent}%"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return True
+            except Exception:
+                pass
+        time.sleep(delay)
+
+    return False
 
 
 def _list_sink_inputs() -> list[dict]:

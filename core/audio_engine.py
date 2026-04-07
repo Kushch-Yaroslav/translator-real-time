@@ -109,6 +109,7 @@ class AudioEngine:
         self._low_latency_last_queued_text = ""
         self._low_latency_partial_queued = False
         self._low_latency_deferred_partial_text = ""
+        self._translation_paused = False
 
     def start(
             self,
@@ -355,6 +356,23 @@ class AudioEngine:
         self.processor.set_mode(mode)
         self._log(f"Processing mode changed to: {mode.value}")
 
+    def set_translation_paused(self, paused: bool) -> None:
+        self._translation_paused = bool(paused)
+
+        if self.processor is not None:
+            self.processor.set_mode(
+                ProcessingMode.MUTE if self._translation_paused else ProcessingMode.PASSTHROUGH
+            )
+
+        self._clear_final_text_queue()
+        self._clear_low_latency_queue()
+        self._clear_pending_final()
+        self._clear_partial_state()
+        self._reset_output_audio_queue()
+
+        state = "paused" if self._translation_paused else "resumed"
+        self._log(f"Translation stream {state}")
+
     def get_mode(self) -> str:
         if self.processor is None:
             return ProcessingMode.PASSTHROUGH.value
@@ -399,6 +417,9 @@ class AudioEngine:
                 self._handle_error(f"Processing error: {error}")
 
     def _on_realtime_partial(self, text: str) -> None:
+        if self._translation_paused:
+            return
+
         if not text:
             return
 
@@ -460,7 +481,7 @@ class AudioEngine:
         self._log(f"PARTIAL: {text}")
 
     def _on_realtime_final(self, text: str) -> None:
-        if not self.running:
+        if not self.running or self._translation_paused:
             return
 
         now = time.monotonic()
@@ -583,7 +604,7 @@ class AudioEngine:
             time.sleep(0.05)
 
     def _process_final_text(self, text: str) -> None:
-        if not self.running:
+        if not self.running or self._translation_paused:
             return
 
         if self._stt_backend_outputs_translated_text():
@@ -771,6 +792,12 @@ class AudioEngine:
         with self._utterance_audio_lock:
             self._utterance_audio_chunks = []
             self._utterance_audio_total_frames = 0
+
+    def _reset_output_audio_queue(self) -> None:
+        session = self.session
+        if session is None:
+            return
+        session.clear_output_queue()
 
     def _reset_utterance_state(self) -> None:
         self.last_final_text = ""
