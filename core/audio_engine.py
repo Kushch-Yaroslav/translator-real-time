@@ -18,6 +18,8 @@ from core.audio_service import (
     log_audio_routing_snapshot,
     move_app_playback_to_sink,
     move_app_recording_to_source,
+    snapshot_sink_input_ids,
+    snapshot_source_output_ids,
 )
 from core.app_config import AppConfig, DEFAULT_CONFIG, TranslationBranchConfig, get_primary_branch_config
 from core.sst.confirm_stt_factory import create_confirm_stt_service
@@ -121,6 +123,7 @@ class AudioEngine:
             channels: int = 1,
             blocksize: int = 1024,
             stt_window_seconds: float = 1.0,
+            pulse_stream_tag: str | None = None,
     ) -> None:
         if self.running:
             self._log("AudioEngine already running")
@@ -218,6 +221,9 @@ class AudioEngine:
 
         self.running = True
 
+        sink_input_ids_before = snapshot_sink_input_ids()
+        source_output_ids_before = snapshot_source_output_ids()
+
         self.session = AudioSession(config)
         self.session.on_error = self._handle_error
         self.session.start()
@@ -227,6 +233,8 @@ class AudioEngine:
         moved_input = move_app_recording_to_source(
             selected_pactl_input_name,
             logger=self._log,
+            existing_ids=source_output_ids_before,
+            stream_tag=pulse_stream_tag,
         )
         self._log(
             f"Move recording stream to source '{selected_pactl_input_name}': {'OK' if moved_input else 'FAILED'}"
@@ -235,6 +243,8 @@ class AudioEngine:
         moved_output = move_app_playback_to_sink(
             selected_pactl_output_name,
             logger=self._log,
+            existing_ids=sink_input_ids_before,
+            stream_tag=pulse_stream_tag,
         )
         self._log(
             f"Move playback stream to sink '{selected_pactl_output_name}': {'OK' if moved_output else 'FAILED'}"
@@ -1077,9 +1087,16 @@ class AudioEngine:
         self,
         branch_config: TranslationBranchConfig,
     ) -> tuple[TranslationService, bool]:
+        translation_direction = self._resolve_translation_direction(branch_config)
+        translation_device = (
+            "cpu"
+            if translation_direction == TranslationDirection.RU_TO_EN
+            else None
+        )
         key = (
-            self._resolve_translation_direction(branch_config).value,
+            translation_direction.value,
             bool(branch_config.enabled),
+            translation_device or "auto",
         )
 
         with self._service_cache_lock:
@@ -1089,8 +1106,9 @@ class AudioEngine:
             self._log(f"Loading translation model: {branch_config.label} ...")
             service = TranslationService(
                 TranslationConfig(
-                    direction=self._resolve_translation_direction(branch_config),
+                    direction=translation_direction,
                     enabled=branch_config.enabled,
+                    device=translation_device,
                 )
             )
             self._cached_translation_service = service

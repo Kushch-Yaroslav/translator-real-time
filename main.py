@@ -1,11 +1,11 @@
 import faulthandler
 import sys
-import threading
 from pathlib import Path
 from PySide6.QtWidgets import QApplication
+from core.backend_manager import BackendManager
+from core.backend_status_window import BackendStatusWindow
 from core.main_window import MainWindow
 from core.app_config import load_app_config
-from core.stt_runtime import ensure_stt_runtime_for_app_config
 
 
 def _startup_log(message: str) -> None:
@@ -19,19 +19,11 @@ def _startup_log(message: str) -> None:
         log_file.write(text + "\n")
 
 
-def _warm_stt_runtime(app_config) -> None:
-    try:
-        _startup_log("warming STT runtime in background")
-        ensure_stt_runtime_for_app_config(app_config)
-        _startup_log("STT runtime ready")
-    except Exception as error:
-        _startup_log(f"Background STT warmup skipped: {error}")
-
-
 def main():
     faulthandler.enable()
     _startup_log("creating QApplication")
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
     _startup_log("QApplication created")
 
     try:
@@ -48,17 +40,21 @@ def main():
         print(f"Config startup error: {error}", file=sys.stderr, flush=True)
         sys.exit(1)
 
+    _startup_log("creating BackendManager")
+    backend_manager = BackendManager(app_config, Path(__file__).resolve().parent)
+    backend_manager.ensure_started_async()
+    _startup_log("BackendManager created")
+
+    _startup_log("creating BackendStatusWindow")
+    status_window = BackendStatusWindow(backend_manager)
+    status_window.show()
+    _startup_log("BackendStatusWindow shown")
+
     _startup_log("creating MainWindow")
-    window = MainWindow()
+    window = MainWindow(backend_manager=backend_manager)
     _startup_log("MainWindow created")
     window.show()
     _startup_log("MainWindow shown")
-    threading.Thread(
-        target=_warm_stt_runtime,
-        args=(app_config,),
-        daemon=True,
-        name="startup-stt-warmup",
-    ).start()
     _startup_log("entering event loop")
     sys.exit(app.exec())
 

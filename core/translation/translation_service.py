@@ -47,8 +47,7 @@ class TranslationService:
         self.device = config.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         self.tokenizer = MarianTokenizer.from_pretrained(self.model_name)
-        self.model = MarianMTModel.from_pretrained(self.model_name)
-        self.model.to(self.device)
+        self.model = self._load_model_with_fallback()
 
     def warmup(self) -> None:
         sample_text = "Привет." if self.config.direction == TranslationDirection.RU_TO_EN else "Hello."
@@ -215,3 +214,27 @@ class TranslationService:
             return "Helsinki-NLP/opus-mt-ru-en"
 
         raise ValueError(f"Unsupported translation direction: {direction}")
+
+    def _load_model_with_fallback(self) -> MarianMTModel:
+        try:
+            model = MarianMTModel.from_pretrained(
+                self.model_name,
+                low_cpu_mem_usage=False,
+            )
+            model.to(self.device)
+            return model
+        except Exception as error:
+            if self.device != "cpu" and self._looks_like_meta_tensor_error(error):
+                self.device = "cpu"
+                model = MarianMTModel.from_pretrained(
+                    self.model_name,
+                    low_cpu_mem_usage=False,
+                )
+                model.to(self.device)
+                return model
+            raise
+
+    @staticmethod
+    def _looks_like_meta_tensor_error(error: Exception) -> bool:
+        text = str(error).lower()
+        return "meta tensor" in text or "to_empty" in text

@@ -53,11 +53,17 @@ class AppFileLogger:
         if not message:
             return False
 
+        normalized = message
+        for prefix in ("[LISTEN] ", "[SPEAK] "):
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix):]
+                break
+
         excluded_prefixes = (
             "PARTIAL:",
             "Realtime partial:",
         )
-        if message.startswith(excluded_prefixes):
+        if normalized.startswith(excluded_prefixes):
             return False
 
         included_prefixes = (
@@ -66,6 +72,12 @@ class AppFileLogger:
             "Selected pactl output:",
             "Mapped sounddevice input index:",
             "Mapped sounddevice output index:",
+            "Audio routing |",
+            "Audio routing snapshot |",
+            "Original audio loopback",
+            "Speak passthrough loopback",
+            "Original audio mode:",
+            "Translator loopbacks cleaned before start:",
             "Loading translation model:",
             "Translation model loaded",
             "Loading TTS voice:",
@@ -106,4 +118,4 @@ class AppFileLogger:
             "Dropped stale TTS audio queue",
             "Engine is not running yet.",
         )
-        return message.startswith(included_prefixes)
+        return normalized.startswith(included_prefixes)
