@@ -18,6 +18,8 @@ from core.audio_service import (
     log_audio_routing_snapshot,
     move_app_playback_to_sink,
     move_app_recording_to_source,
+    snapshot_sink_input_ids,
+    snapshot_source_output_ids,
 )
 from core.app_config import AppConfig, DEFAULT_CONFIG, TranslationBranchConfig, get_primary_branch_config
 from core.sst.confirm_stt_factory import create_confirm_stt_service
@@ -109,6 +111,7 @@ class AudioEngine:
         self._low_latency_last_queued_text = ""
         self._low_latency_partial_queued = False
         self._low_latency_deferred_partial_text = ""
+        self._translation_paused = False
 
     def start(
             self,
@@ -120,6 +123,7 @@ class AudioEngine:
             channels: int = 1,
             blocksize: int = 1024,
             stt_window_seconds: float = 1.0,
+            pulse_stream_tag: str | None = None,
     ) -> None:
         if self.running:
             self._log("AudioEngine already running")
@@ -217,6 +221,9 @@ class AudioEngine:
 
         self.running = True
 
+        sink_input_ids_before = snapshot_sink_input_ids()
+        source_output_ids_before = snapshot_source_output_ids()
+
         self.session = AudioSession(config)
         self.session.on_error = self._handle_error
         self.session.start()
@@ -226,6 +233,8 @@ class AudioEngine:
         moved_input = move_app_recording_to_source(
             selected_pactl_input_name,
             logger=self._log,
+            existing_ids=source_output_ids_before,
+            stream_tag=pulse_stream_tag,
         )
         self._log(
             f"Move recording stream to source '{selected_pactl_input_name}': {'OK' if moved_input else 'FAILED'}"
@@ -234,6 +243,8 @@ class AudioEngine:
         moved_output = move_app_playback_to_sink(
             selected_pactl_output_name,
             logger=self._log,
+            existing_ids=sink_input_ids_before,
+            stream_tag=pulse_stream_tag,
         )
         self._log(
             f"Move playback stream to sink '{selected_pactl_output_name}': {'OK' if moved_output else 'FAILED'}"
@@ -355,6 +366,23 @@ class AudioEngine:
         self.processor.set_mode(mode)
         self._log(f"Processing mode changed to: {mode.value}")
 
+    def set_translation_paused(self, paused: bool) -> None:
+        self._translation_paused = bool(paused)
+
+        if self.processor is not None:
+            self.processor.set_mode(
+                ProcessingMode.MUTE if self._translation_paused else ProcessingMode.PASSTHROUGH
+            )
+
+        self._clear_final_text_queue()
+        self._clear_low_latency_queue()
+        self._clear_pending_final()
+        self._clear_partial_state()
+        self._reset_output_audio_queue()
+
+        state = "paused" if self._translation_paused else "resumed"
+        self._log(f"Translation stream {state}")
+
     def get_mode(self) -> str:
         if self.processor is None:
             return ProcessingMode.PASSTHROUGH.value
@@ -399,6 +427,9 @@ class AudioEngine:
                 self._handle_error(f"Processing error: {error}")
 
     def _on_realtime_partial(self, text: str) -> None:
+        if self._translation_paused:
+            return
+
         if not text:
             return
 
@@ -460,7 +491,7 @@ class AudioEngine:
         self._log(f"PARTIAL: {text}")
 
     def _on_realtime_final(self, text: str) -> None:
-        if not self.running:
+        if not self.running or self._translation_paused:
             return
 
         now = time.monotonic()
@@ -583,7 +614,7 @@ class AudioEngine:
             time.sleep(0.05)
 
     def _process_final_text(self, text: str) -> None:
-        if not self.running:
+        if not self.running or self._translation_paused:
             return
 
         if self._stt_backend_outputs_translated_text():
@@ -771,6 +802,12 @@ class AudioEngine:
         with self._utterance_audio_lock:
             self._utterance_audio_chunks = []
             self._utterance_audio_total_frames = 0
+
+    def _reset_output_audio_queue(self) -> None:
+        session = self.session
+        if session is None:
+            return
+        session.clear_output_queue()
 
     def _reset_utterance_state(self) -> None:
         self.last_final_text = ""
@@ -1050,9 +1087,16 @@ class AudioEngine:
         self,
         branch_config: TranslationBranchConfig,
     ) -> tuple[TranslationService, bool]:
+        translation_direction = self._resolve_translation_direction(branch_config)
+        translation_device = (
+            "cpu"
+            if translation_direction == TranslationDirection.RU_TO_EN
+            else None
+        )
         key = (
-            self._resolve_translation_direction(branch_config).value,
+            translation_direction.value,
             bool(branch_config.enabled),
+            translation_device or "auto",
         )
 
         with self._service_cache_lock:
@@ -1062,8 +1106,9 @@ class AudioEngine:
             self._log(f"Loading translation model: {branch_config.label} ...")
             service = TranslationService(
                 TranslationConfig(
-                    direction=self._resolve_translation_direction(branch_config),
+                    direction=translation_direction,
                     enabled=branch_config.enabled,
+                    device=translation_device,
                 )
             )
             self._cached_translation_service = service
