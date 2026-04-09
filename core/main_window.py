@@ -57,7 +57,7 @@ class MainWindow(QWidget):
     def __init__(self, backend_manager: BackendManager | None = None):
         super().__init__()
 
-        self.setWindowTitle("Мой переводчик")
+        self.setWindowTitle("Голосовой перевод в реальном времени")
         self.resize(1080, 920)
 
         self.backend_manager = backend_manager
