@@ -162,19 +162,66 @@ def is_virtual_translator_device(name: str) -> bool:
     }
 
 
+def _score_real_input_device(device: AudioDevice, default_source: Optional[str]) -> int:
+    name = (device.name or "").lower()
+    description = (device.description or "").lower()
+    haystack = f"{name} {description}"
+
+    score = 0
+
+    preferred_keywords = (
+        "jbl",
+        "quantum",
+        "wireless",
+        "headset",
+        "headphone",
+        "microphone",
+        "mic",
+        "usb audio",
+    )
+    discouraged_keywords = (
+        "camera",
+        "webcam",
+        "ugreen",
+        "hd webcam",
+        "integrated",
+        "monitor of ",
+    )
+
+    if default_source and device.name == default_source:
+        score += 100
+
+    for keyword in preferred_keywords:
+        if keyword in haystack:
+            score += 20
+
+    for keyword in discouraged_keywords:
+        if keyword in haystack:
+            score -= 50
+
+    if ".mono-fallback" in name:
+        score += 10
+
+    return score
+
+
 def get_default_real_source_name() -> Optional[str]:
     default_source = get_default_source_name()
     inputs = list_input_devices()
 
     if default_source and not default_source.endswith(".monitor") and not is_virtual_translator_device(default_source):
-        return default_source
+        default_device = next((device for device in inputs if device.name == default_source), None)
+        if default_device and _score_real_input_device(default_device, default_source) >= 0:
+            return default_source
 
-    for device in inputs:
-        if device.name.endswith(".monitor"):
-            continue
-        if is_virtual_translator_device(device.name):
-            continue
-        return device.name
+    candidates = [
+        device
+        for device in inputs
+        if not device.name.endswith(".monitor") and not is_virtual_translator_device(device.name)
+    ]
+    if candidates:
+        best = max(candidates, key=lambda device: _score_real_input_device(device, default_source))
+        return best.name
 
     return default_source
 
