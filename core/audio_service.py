@@ -241,6 +241,31 @@ def get_default_real_sink_name() -> Optional[str]:
     return default_sink
 
 
+def repair_default_audio_devices() -> list[str]:
+    """
+    Keep Translator* devices available for explicit routing, but do not leave
+    them as desktop-wide defaults. GNOME/PipeWire can behave badly when a
+    monitor source becomes the default input.
+    """
+    changes: list[str] = []
+
+    default_source = get_default_source_name()
+    if default_source and (
+        default_source.endswith(".monitor") or is_virtual_translator_device(default_source)
+    ):
+        real_source = get_default_real_source_name()
+        if real_source and real_source != default_source and set_default_source_name(real_source):
+            changes.append(f"default source: {default_source} -> {real_source}")
+
+    default_sink = get_default_sink_name()
+    if default_sink and is_virtual_translator_device(default_sink):
+        real_sink = get_default_real_sink_name()
+        if real_sink and real_sink != default_sink and set_default_sink_name(real_sink):
+            changes.append(f"default sink: {default_sink} -> {real_sink}")
+
+    return changes
+
+
 def enrich_default_flags(inputs: List[AudioDevice], outputs: List[AudioDevice]) -> None:
     default_source = get_default_source_name()
     default_sink = get_default_sink_name()

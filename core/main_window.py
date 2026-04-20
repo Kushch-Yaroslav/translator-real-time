@@ -32,6 +32,7 @@ from core.audio_service import (
     get_default_real_source_name,
     get_monitor_source_name_for_sink,
     load_source_loopback,
+    repair_default_audio_devices,
     set_loopback_volume_percent,
     temporary_pulse_stream_properties,
     unload_pulse_module,
@@ -236,6 +237,9 @@ class MainWindow(QWidget):
             ensure_translator_sink_exists()
             ensure_translator_listen_sink_exists()
             ensure_translator_mic_source_exists()
+            if not self.pipeline_running and not self.pipeline_starting:
+                for change in repair_default_audio_devices():
+                    self._emit_log(f"Audio defaults repaired | {change}")
             self.speak_input_name = get_default_real_source_name() or ""
             self.original_sink_name = get_default_real_sink_name() or ""
             self.listen_input_name = get_monitor_source_name_for_sink(TRANSLATOR_LISTEN_SINK_NAME)
