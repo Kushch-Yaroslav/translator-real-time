@@ -103,7 +103,17 @@ def find_sounddevice_device_index_by_name(
         name_substring: str,
         min_input_channels: int = 0,
         min_output_channels: int = 0,
+        prefer_pulse: bool = False,
 ) -> Optional[int]:
+    if prefer_pulse:
+        pulse_index = find_pulse_device_index(is_input=min_input_channels > 0)
+        if pulse_index is not None:
+            pulse_device = sd.query_devices(pulse_index)
+            max_input_channels = int(pulse_device.get("max_input_channels", 0))
+            max_output_channels = int(pulse_device.get("max_output_channels", 0))
+            if max_input_channels >= min_input_channels and max_output_channels >= min_output_channels:
+                return pulse_index
+
     devices = sd.query_devices()
     search_tokens = _extract_search_tokens(name_substring)
 

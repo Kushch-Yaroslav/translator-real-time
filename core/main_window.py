@@ -33,6 +33,7 @@ from core.audio_service import (
     get_monitor_source_name_for_sink,
     load_source_loopback,
     repair_default_audio_devices,
+    set_sink_volume_percent,
     set_loopback_volume_percent,
     temporary_pulse_stream_properties,
     unload_pulse_module,
@@ -90,6 +91,8 @@ class MainWindow(QWidget):
         self.speak_passthrough_loopback_module_id: str | None = None
         self._original_audio_fade_token = 0
         self._speak_audio_fade_token = 0
+        self._pending_reset_restore_listen_active: bool | None = None
+        self._pending_reset_restore_speak_active: bool | None = None
 
         self._build_ui()
         self._bind_events()
@@ -161,11 +164,13 @@ class MainWindow(QWidget):
         layout = QHBoxLayout(group)
 
         self.refresh_button = QPushButton("Обновить устройства")
+        self.reset_audio_button = QPushButton("Reset")
         self.start_button = QPushButton("Запустить пайплайн")
         self.stop_button = QPushButton("Остановить пайплайн")
         self.stop_button.setEnabled(False)
 
         layout.addWidget(self.refresh_button)
+        layout.addWidget(self.reset_audio_button)
         layout.addWidget(self.start_button)
         layout.addWidget(self.stop_button)
         return group
@@ -223,6 +228,7 @@ class MainWindow(QWidget):
 
     def _bind_events(self) -> None:
         self.refresh_button.clicked.connect(self.refresh_routes)
+        self.reset_audio_button.clicked.connect(self.reset_audio)
         self.start_button.clicked.connect(self.start_pipeline)
         self.stop_button.clicked.connect(self.stop_pipeline)
         self.speak_toggle_button.clicked.connect(self.toggle_speak)
@@ -307,6 +313,38 @@ class MainWindow(QWidget):
         self._update_controls_state()
         self._emit_log("Dual pipeline stopped")
 
+    def reset_audio(self) -> None:
+        if self.pipeline_starting:
+            return
+
+        was_running = self.pipeline_running
+        restore_listen_active = self.listen_active
+        restore_speak_active = self.speak_active
+
+        self._emit_log("Audio reset requested...")
+
+        if was_running:
+            self.stop_pipeline()
+            time.sleep(0.3)
+        else:
+            self._stop_original_loopback()
+            self._stop_speak_passthrough_loopback()
+            removed_loopbacks = cleanup_translator_loopbacks(self._emit_log)
+            if removed_loopbacks:
+                self._emit_log(f"Translator loopbacks cleaned during reset: {removed_loopbacks}")
+
+        self.refresh_routes()
+        set_sink_volume_percent(TRANSLATOR_LISTEN_SINK_NAME, 100)
+        set_sink_volume_percent(TRANSLATOR_SINK_NAME, 100)
+
+        if was_running:
+            self._pending_reset_restore_listen_active = restore_listen_active
+            self._pending_reset_restore_speak_active = restore_speak_active
+            self.start_pipeline()
+            return
+
+        self._emit_log("Audio reset completed")
+
     def _start_pipeline_worker(self) -> None:
         try:
             ensure_stt_runtime_for_app_config(self.listen_engine.app_config)
@@ -338,10 +376,24 @@ class MainWindow(QWidget):
         self._stop_speak_passthrough_loopback()
         self._apply_current_original_audio_mode(fade_in=True)
 
+        restore_listen_active = self._pending_reset_restore_listen_active
+        restore_speak_active = self._pending_reset_restore_speak_active
+        self._pending_reset_restore_listen_active = None
+        self._pending_reset_restore_speak_active = None
+
+        if restore_speak_active is False:
+            self.toggle_speak()
+        if restore_listen_active is False:
+            self.toggle_listen()
+        if restore_listen_active is not None or restore_speak_active is not None:
+            self._emit_log("Audio reset completed")
+
         self._update_controls_state()
         self._emit_log("Dual pipeline started")
 
     def _on_pipeline_start_failed(self, message: str) -> None:
+        self._pending_reset_restore_listen_active = None
+        self._pending_reset_restore_speak_active = None
         self.pipeline_starting = False
         self.pipeline_running = False
         self.listen_active = False
@@ -551,8 +603,16 @@ class MainWindow(QWidget):
         input_name = self.listen_input_name
         output_name = self.original_sink_name
 
-        input_index = find_sounddevice_device_index_by_name(input_name, min_input_channels=1)
-        output_index = find_sounddevice_device_index_by_name(output_name, min_output_channels=1)
+        input_index = find_sounddevice_device_index_by_name(
+            input_name,
+            min_input_channels=1,
+            prefer_pulse=True,
+        )
+        output_index = find_sounddevice_device_index_by_name(
+            output_name,
+            min_output_channels=1,
+            prefer_pulse=True,
+        )
 
         if input_index is None:
             raise RuntimeError(f"Не удалось сопоставить listen input: {input_name}")
@@ -587,8 +647,16 @@ class MainWindow(QWidget):
         input_name = self.speak_input_name
         output_name = TRANSLATOR_SINK_NAME
 
-        input_index = find_sounddevice_device_index_by_name(input_name, min_input_channels=1)
-        output_index = find_sounddevice_device_index_by_name(output_name, min_output_channels=1)
+        input_index = find_sounddevice_device_index_by_name(
+            input_name,
+            min_input_channels=1,
+            prefer_pulse=True,
+        )
+        output_index = find_sounddevice_device_index_by_name(
+            output_name,
+            min_output_channels=1,
+            prefer_pulse=True,
+        )
 
         if input_index is None:
             raise RuntimeError(f"Не удалось сопоставить speak input: {input_name}")
@@ -663,11 +731,18 @@ class MainWindow(QWidget):
         self.stop_button.setEnabled(self.pipeline_running and not self.pipeline_starting)
 
         self.refresh_button.setEnabled(not self.pipeline_starting)
+        self.reset_audio_button.setEnabled(not self.pipeline_starting)
         self.speak_toggle_button.setEnabled(self.pipeline_running and not self.pipeline_starting)
         self.listen_toggle_button.setEnabled(self.pipeline_running and not self.pipeline_starting)
         for button in (self.listen_mute_button, self.listen_duck_button, self.listen_full_button):
             button.setEnabled(self.pipeline_running and not self.pipeline_starting)
         self.original_volume_slider.setEnabled(self.pipeline_running and not self.pipeline_starting)
+
+        self.reset_audio_button.setStyleSheet(
+            "QPushButton { "
+            "background: #c99612; color: black; border: none; "
+            "padding: 8px 14px; border-radius: 8px; font-weight: 700; }"
+        )
 
         self._set_status_chip(
             self.speak_status_label,
