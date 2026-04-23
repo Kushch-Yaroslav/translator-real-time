@@ -56,6 +56,7 @@ class AudioEngine:
 
         self.on_log: Optional[Callable[[str], None]] = None
         self.on_error: Optional[Callable[[str], None]] = None
+        self.on_input_level: Optional[Callable[[float], None]] = None
 
         self.processor: Optional[ChunkProcessor] = None
 
@@ -112,6 +113,7 @@ class AudioEngine:
         self._low_latency_partial_queued = False
         self._low_latency_deferred_partial_text = ""
         self._translation_paused = False
+        self._last_input_level = 0.0
 
     def start(
             self,
@@ -332,6 +334,7 @@ class AudioEngine:
         self._clear_pending_final()
         self._clear_partial_state()
 
+        self._emit_input_level(0.0)
         self._log("AudioEngine stopped")
 
     def prewarm_runtime(self) -> None:
@@ -404,6 +407,7 @@ class AudioEngine:
                 break
 
             try:
+                self._emit_input_level(self._calculate_input_level(chunk))
                 processed_chunk = self.process_chunk(chunk)
 
                 if not self.running:
@@ -425,6 +429,26 @@ class AudioEngine:
 
             except Exception as error:
                 self._handle_error(f"Processing error: {error}")
+
+    @staticmethod
+    def _calculate_input_level(chunk: np.ndarray) -> float:
+        if chunk.size == 0:
+            return 0.0
+
+        audio = chunk.astype(np.float32, copy=False)
+        mono = audio[:, 0] if audio.ndim == 2 else audio
+        if mono.size == 0:
+            return 0.0
+
+        rms = float(np.sqrt(np.mean(np.square(mono)) + 1e-10))
+        normalized = min(1.0, max(0.0, rms * 8.0))
+        return normalized
+
+    def _emit_input_level(self, level: float) -> None:
+        smoothed = max(float(level), self._last_input_level * 0.82)
+        self._last_input_level = smoothed
+        if self.on_input_level is not None:
+            self.on_input_level(smoothed)
 
     def _on_realtime_partial(self, text: str) -> None:
         if self._translation_paused:
@@ -2043,6 +2067,39 @@ class AudioEngine:
             return TranslationDirection.RU_TO_EN
         return TranslationDirection.EN_TO_RU
 
+    @staticmethod
+    def _should_emit_log_message(message: str) -> bool:
+        noisy_prefixes = (
+            "PARTIAL:",
+            "Realtime partial:",
+            "Faster-whisper partial:",
+            "Faster-whisper final:",
+            "Faster-whisper VAD start",
+            "Faster-whisper VAD end",
+            "whisper.cpp partial:",
+            "whisper.cpp final:",
+            "whisper.cpp VAD start",
+            "whisper.cpp VAD end",
+            "FINAL incremental:",
+            "FINAL merged:",
+            "FINAL skipped:",
+            "PARTIAL promoted:",
+            "PARTIAL sentence queued:",
+            "PARTIAL sentence stream:",
+            "FINAL sentence queued:",
+            "FINAL sentence stream:",
+            "LOWLAT partial queued:",
+            "LOWLAT final queued:",
+            "LOWLAT final skipped:",
+            "LOWLAT skipped:",
+            "Translation time:",
+            "TTS time:",
+            "TTS audio ready:",
+            "TRANSLATED skipped:",
+            "Dropped stale TTS audio queue",
+        )
+        return not message.startswith(noisy_prefixes)
+
     def _log(self, message: str) -> None:
-        if self.on_log:
+        if self.on_log and self._should_emit_log_message(message):
             self.on_log(message)
