@@ -4,7 +4,8 @@ import threading
 import time
 
 import sounddevice as sd
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QSize, QRectF
+from PySide6.QtGui import QColor, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
@@ -33,6 +34,7 @@ from core.audio_service import (
     get_monitor_source_name_for_sink,
     load_source_loopback,
     repair_default_audio_devices,
+    set_sink_volume_percent,
     set_loopback_volume_percent,
     temporary_pulse_stream_properties,
     unload_pulse_module,
@@ -43,11 +45,63 @@ from core.file_logger import AppFileLogger
 from core.stt_runtime import ensure_stt_runtime_for_app_config
 
 
+class AudioLevelMeter(QWidget):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._level = 0.0
+        self.setMinimumWidth(120)
+        self.setMaximumWidth(180)
+        self.setMinimumHeight(18)
+        self.setMaximumHeight(18)
+
+    def sizeHint(self) -> QSize:
+        return QSize(150, 18)
+
+    def set_level(self, level: float) -> None:
+        bounded = max(0.0, min(1.0, float(level)))
+        if abs(bounded - self._level) < 0.01:
+            return
+        self._level = bounded
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        rect = self.rect().adjusted(0, 2, 0, -2)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#2f2f2f"))
+        painter.drawRoundedRect(rect, 6, 6)
+
+        bars = 18
+        gap = 3.0
+        active_bars = int(round(self._level * bars))
+        bar_width = max(2.0, (rect.width() - gap * (bars + 1)) / float(bars))
+
+        for index in range(bars):
+            x = rect.x() + gap + index * (bar_width + gap)
+            level_factor = (index + 1) / float(bars)
+            bar_height = max(4.0, rect.height() * level_factor)
+            y = rect.y() + (rect.height() - bar_height) / 2.0
+            bar_rect = QRectF(x, y, bar_width, bar_height)
+
+            if index < active_bars:
+                color = QColor("#1fbf65") if index < bars * 0.7 else QColor("#d6a21d")
+            else:
+                color = QColor("#555555")
+
+            path = QPainterPath()
+            path.addRoundedRect(bar_rect, 1.8, 1.8)
+            painter.fillPath(path, color)
+
+
 class MainWindow(QWidget):
     log_signal = Signal(str)
     error_signal = Signal(str)
     pipeline_start_succeeded_signal = Signal()
     pipeline_start_failed_signal = Signal(str)
+    listen_level_signal = Signal(float)
+    speak_level_signal = Signal(float)
 
     ORIGINAL_MODE_MUTED = "muted"
     ORIGINAL_MODE_DUCKED = "ducked"
@@ -90,6 +144,8 @@ class MainWindow(QWidget):
         self.speak_passthrough_loopback_module_id: str | None = None
         self._original_audio_fade_token = 0
         self._speak_audio_fade_token = 0
+        self._pending_reset_restore_listen_active: bool | None = None
+        self._pending_reset_restore_speak_active: bool | None = None
 
         self._build_ui()
         self._bind_events()
@@ -98,11 +154,15 @@ class MainWindow(QWidget):
         self.error_signal.connect(self._append_error_to_ui)
         self.pipeline_start_succeeded_signal.connect(self._on_pipeline_started)
         self.pipeline_start_failed_signal.connect(self._on_pipeline_start_failed)
+        self.listen_level_signal.connect(self._set_listen_level)
+        self.speak_level_signal.connect(self._set_speak_level)
 
         self.listen_engine.on_log = lambda message: self._emit_log(f"[LISTEN] {message}")
         self.listen_engine.on_error = lambda message: self._emit_error(f"[LISTEN] {message}")
+        self.listen_engine.on_input_level = self.listen_level_signal.emit
         self.speak_engine.on_log = lambda message: self._emit_log(f"[SPEAK] {message}")
         self.speak_engine.on_error = lambda message: self._emit_error(f"[SPEAK] {message}")
+        self.speak_engine.on_input_level = self.speak_level_signal.emit
 
         self.refresh_routes()
         self._update_controls_state()
@@ -125,10 +185,7 @@ class MainWindow(QWidget):
         self.main_layout.addWidget(self._build_pipeline_group())
         self.main_layout.addWidget(self._build_speak_group())
         self.main_layout.addWidget(self._build_listen_group())
-
-        self.log_output = QTextEdit()
-        self.log_output.setReadOnly(True)
-        self.main_layout.addWidget(self.log_output)
+        self.main_layout.addWidget(self._build_logs_group())
 
     def _build_routes_group(self) -> QGroupBox:
         group = QGroupBox("Маршрут")
@@ -161,11 +218,13 @@ class MainWindow(QWidget):
         layout = QHBoxLayout(group)
 
         self.refresh_button = QPushButton("Обновить устройства")
+        self.reset_audio_button = QPushButton("Reset")
         self.start_button = QPushButton("Запустить пайплайн")
         self.stop_button = QPushButton("Остановить пайплайн")
         self.stop_button.setEnabled(False)
 
         layout.addWidget(self.refresh_button)
+        layout.addWidget(self.reset_audio_button)
         layout.addWidget(self.start_button)
         layout.addWidget(self.stop_button)
         return group
@@ -175,10 +234,12 @@ class MainWindow(QWidget):
         layout = QHBoxLayout(group)
 
         self.speak_status_label = QLabel()
+        self.speak_level_meter = AudioLevelMeter()
         self.speak_toggle_button = QPushButton()
         self.speak_toggle_button.setEnabled(False)
 
         layout.addWidget(self.speak_status_label)
+        layout.addWidget(self.speak_level_meter)
         layout.addStretch(1)
         layout.addWidget(self.speak_toggle_button)
         return group
@@ -189,9 +250,11 @@ class MainWindow(QWidget):
 
         top_row = QHBoxLayout()
         self.listen_status_label = QLabel()
+        self.listen_level_meter = AudioLevelMeter()
         self.listen_toggle_button = QPushButton()
         self.listen_toggle_button.setEnabled(False)
         top_row.addWidget(self.listen_status_label)
+        top_row.addWidget(self.listen_level_meter)
         top_row.addStretch(1)
         top_row.addWidget(self.listen_toggle_button)
         layout.addLayout(top_row)
@@ -221,8 +284,45 @@ class MainWindow(QWidget):
 
         return group
 
+    def _build_logs_group(self) -> QGroupBox:
+        group = QGroupBox("Логи")
+        layout = QHBoxLayout(group)
+
+        speak_column = QVBoxLayout()
+        speak_header = QHBoxLayout()
+        speak_label = QLabel("Что сказал я")
+        self.clear_speak_logs_button = QPushButton("Очистить")
+        self.clear_speak_logs_button.setMaximumWidth(90)
+        speak_header.addWidget(speak_label)
+        speak_header.addStretch(1)
+        speak_header.addWidget(self.clear_speak_logs_button)
+        self.speak_log_output = QTextEdit()
+        self.speak_log_output.setReadOnly(True)
+        speak_column.addLayout(speak_header)
+        speak_column.addWidget(self.speak_log_output)
+
+        listen_column = QVBoxLayout()
+        listen_header = QHBoxLayout()
+        listen_label = QLabel("Что сказали мне")
+        self.clear_listen_logs_button = QPushButton("Очистить")
+        self.clear_listen_logs_button.setMaximumWidth(90)
+        listen_header.addWidget(listen_label)
+        listen_header.addStretch(1)
+        listen_header.addWidget(self.clear_listen_logs_button)
+        self.listen_log_output = QTextEdit()
+        self.listen_log_output.setReadOnly(True)
+        listen_column.addLayout(listen_header)
+        listen_column.addWidget(self.listen_log_output)
+
+        layout.addLayout(speak_column, stretch=1)
+        layout.addLayout(listen_column, stretch=1)
+        return group
+
     def _bind_events(self) -> None:
         self.refresh_button.clicked.connect(self.refresh_routes)
+        self.reset_audio_button.clicked.connect(self.reset_audio)
+        self.clear_speak_logs_button.clicked.connect(self._clear_speak_logs)
+        self.clear_listen_logs_button.clicked.connect(self._clear_listen_logs)
         self.start_button.clicked.connect(self.start_pipeline)
         self.stop_button.clicked.connect(self.stop_pipeline)
         self.speak_toggle_button.clicked.connect(self.toggle_speak)
@@ -304,8 +404,42 @@ class MainWindow(QWidget):
         self.pipeline_running = False
         self.listen_active = False
         self.speak_active = False
+        self._set_listen_level(0.0)
+        self._set_speak_level(0.0)
         self._update_controls_state()
         self._emit_log("Dual pipeline stopped")
+
+    def reset_audio(self) -> None:
+        if self.pipeline_starting:
+            return
+
+        was_running = self.pipeline_running
+        restore_listen_active = self.listen_active
+        restore_speak_active = self.speak_active
+
+        self._emit_log("Audio reset requested...")
+
+        if was_running:
+            self.stop_pipeline()
+            time.sleep(0.3)
+        else:
+            self._stop_original_loopback()
+            self._stop_speak_passthrough_loopback()
+            removed_loopbacks = cleanup_translator_loopbacks(self._emit_log)
+            if removed_loopbacks:
+                self._emit_log(f"Translator loopbacks cleaned during reset: {removed_loopbacks}")
+
+        self.refresh_routes()
+        set_sink_volume_percent(TRANSLATOR_LISTEN_SINK_NAME, 100)
+        set_sink_volume_percent(TRANSLATOR_SINK_NAME, 100)
+
+        if was_running:
+            self._pending_reset_restore_listen_active = restore_listen_active
+            self._pending_reset_restore_speak_active = restore_speak_active
+            self.start_pipeline()
+            return
+
+        self._emit_log("Audio reset completed")
 
     def _start_pipeline_worker(self) -> None:
         try:
@@ -338,10 +472,24 @@ class MainWindow(QWidget):
         self._stop_speak_passthrough_loopback()
         self._apply_current_original_audio_mode(fade_in=True)
 
+        restore_listen_active = self._pending_reset_restore_listen_active
+        restore_speak_active = self._pending_reset_restore_speak_active
+        self._pending_reset_restore_listen_active = None
+        self._pending_reset_restore_speak_active = None
+
+        if restore_speak_active is False:
+            self.toggle_speak()
+        if restore_listen_active is False:
+            self.toggle_listen()
+        if restore_listen_active is not None or restore_speak_active is not None:
+            self._emit_log("Audio reset completed")
+
         self._update_controls_state()
         self._emit_log("Dual pipeline started")
 
     def _on_pipeline_start_failed(self, message: str) -> None:
+        self._pending_reset_restore_listen_active = None
+        self._pending_reset_restore_speak_active = None
         self.pipeline_starting = False
         self.pipeline_running = False
         self.listen_active = False
@@ -551,8 +699,16 @@ class MainWindow(QWidget):
         input_name = self.listen_input_name
         output_name = self.original_sink_name
 
-        input_index = find_sounddevice_device_index_by_name(input_name, min_input_channels=1)
-        output_index = find_sounddevice_device_index_by_name(output_name, min_output_channels=1)
+        input_index = find_sounddevice_device_index_by_name(
+            input_name,
+            min_input_channels=1,
+            prefer_pulse=True,
+        )
+        output_index = find_sounddevice_device_index_by_name(
+            output_name,
+            min_output_channels=1,
+            prefer_pulse=True,
+        )
 
         if input_index is None:
             raise RuntimeError(f"Не удалось сопоставить listen input: {input_name}")
@@ -587,8 +743,16 @@ class MainWindow(QWidget):
         input_name = self.speak_input_name
         output_name = TRANSLATOR_SINK_NAME
 
-        input_index = find_sounddevice_device_index_by_name(input_name, min_input_channels=1)
-        output_index = find_sounddevice_device_index_by_name(output_name, min_output_channels=1)
+        input_index = find_sounddevice_device_index_by_name(
+            input_name,
+            min_input_channels=1,
+            prefer_pulse=True,
+        )
+        output_index = find_sounddevice_device_index_by_name(
+            output_name,
+            min_output_channels=1,
+            prefer_pulse=True,
+        )
 
         if input_index is None:
             raise RuntimeError(f"Не удалось сопоставить speak input: {input_name}")
@@ -663,11 +827,18 @@ class MainWindow(QWidget):
         self.stop_button.setEnabled(self.pipeline_running and not self.pipeline_starting)
 
         self.refresh_button.setEnabled(not self.pipeline_starting)
+        self.reset_audio_button.setEnabled(not self.pipeline_starting)
         self.speak_toggle_button.setEnabled(self.pipeline_running and not self.pipeline_starting)
         self.listen_toggle_button.setEnabled(self.pipeline_running and not self.pipeline_starting)
         for button in (self.listen_mute_button, self.listen_duck_button, self.listen_full_button):
             button.setEnabled(self.pipeline_running and not self.pipeline_starting)
         self.original_volume_slider.setEnabled(self.pipeline_running and not self.pipeline_starting)
+
+        self.reset_audio_button.setStyleSheet(
+            "QPushButton { "
+            "background: #c99612; color: black; border: none; "
+            "padding: 8px 14px; border-radius: 8px; font-weight: 700; }"
+        )
 
         self._set_status_chip(
             self.speak_status_label,
@@ -736,10 +907,33 @@ class MainWindow(QWidget):
         )
 
     def _append_log_to_ui(self, message: str) -> None:
-        self.log_output.append(message)
+        stripped_message = message.strip()
+        if not stripped_message:
+            return
+
+        if stripped_message.startswith("[SPEAK] "):
+            self.speak_log_output.append(stripped_message[len("[SPEAK] "):])
+            return
+
+        if stripped_message.startswith("[LISTEN] "):
+            self.listen_log_output.append(stripped_message[len("[LISTEN] "):])
+            return
+
+        self.speak_log_output.append(stripped_message)
+        self.listen_log_output.append(stripped_message)
 
     def _append_error_to_ui(self, message: str) -> None:
-        self.log_output.append(f"ОШИБКА: {message}")
+        stripped_message = message.strip()
+        if stripped_message.startswith("[SPEAK] "):
+            self.speak_log_output.append(f"ОШИБКА: {stripped_message[len('[SPEAK] '):]}")
+            return
+
+        if stripped_message.startswith("[LISTEN] "):
+            self.listen_log_output.append(f"ОШИБКА: {stripped_message[len('[LISTEN] '):]}")
+            return
+
+        self.speak_log_output.append(f"ОШИБКА: {stripped_message}")
+        self.listen_log_output.append(f"ОШИБКА: {stripped_message}")
 
     def _emit_log(self, message: str) -> None:
         self.log_signal.emit(message)
@@ -748,6 +942,18 @@ class MainWindow(QWidget):
     def _emit_error(self, message: str) -> None:
         self.error_signal.emit(message)
         self.file_logger.error(message)
+
+    def _set_listen_level(self, level: float) -> None:
+        self.listen_level_meter.set_level(level)
+
+    def _set_speak_level(self, level: float) -> None:
+        self.speak_level_meter.set_level(level)
+
+    def _clear_speak_logs(self) -> None:
+        self.speak_log_output.clear()
+
+    def _clear_listen_logs(self) -> None:
+        self.listen_log_output.clear()
 
     def closeEvent(self, event) -> None:
         if self.pipeline_running:
