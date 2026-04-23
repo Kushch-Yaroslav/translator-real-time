@@ -3,19 +3,23 @@ from __future__ import annotations
 import socket
 from urllib.parse import urlparse
 
-from core.app_config import AppConfig, get_primary_branch_config, load_app_config
-from core.nim_runtime import config_from_branch, ensure_nim_runtime, ensure_nim_runtime_for_app_config
+from core.config.app_config import AppConfig, TranslationBranchConfig, get_default_branch_config, load_app_config
+from core.runtime.nim_runtime import config_from_branch, ensure_nim_runtime, ensure_nim_runtime_for_app_config
 
 
-def ensure_stt_runtime_for_app_config(app_config: AppConfig | None = None) -> None:
+def ensure_stt_runtime_for_app_config(
+    app_config: AppConfig | None = None,
+    branch_config: TranslationBranchConfig | None = None,
+) -> None:
     app_config = app_config or load_app_config()
     backend = (app_config.stt.backend or "nim").strip().lower()
+    runtime_branch_config = branch_config or get_default_branch_config(app_config)
 
     if backend == "faster_whisper":
         return
 
     if backend == "canary_ast":
-        ensure_canary_runtime_for_app_config(app_config)
+        ensure_canary_runtime_for_app_config(app_config, runtime_branch_config)
         return
 
     if backend == "whisper_cpp":
@@ -24,14 +28,17 @@ def ensure_stt_runtime_for_app_config(app_config: AppConfig | None = None) -> No
 
     if backend == "riva":
         ensure_riva_runtime_for_app_config(app_config)
-        ensure_confirm_runtime_for_app_config(app_config)
+        ensure_confirm_runtime_for_app_config(app_config, runtime_branch_config)
         return
 
-    ensure_nim_runtime_for_app_config(app_config)
+    ensure_nim_runtime_for_app_config(app_config, runtime_branch_config)
 
 
-def ensure_canary_runtime_for_app_config(app_config: AppConfig) -> None:
-    branch_config = get_primary_branch_config(app_config)
+def ensure_canary_runtime_for_app_config(
+    app_config: AppConfig,
+    branch_config: TranslationBranchConfig | None = None,
+) -> None:
+    branch_config = branch_config or get_default_branch_config(app_config)
     nim_config = config_from_branch(branch_config)
     nim_config.container_id = app_config.stt.canary_container_id
     nim_config.nim_tags_selector = app_config.stt.canary_tags_selector
@@ -44,8 +51,11 @@ def ensure_canary_runtime_for_app_config(app_config: AppConfig) -> None:
     ensure_nim_runtime(nim_config)
 
 
-def ensure_confirm_runtime_for_app_config(app_config: AppConfig) -> None:
-    branch_config = get_primary_branch_config(app_config)
+def ensure_confirm_runtime_for_app_config(
+    app_config: AppConfig,
+    branch_config: TranslationBranchConfig | None = None,
+) -> None:
+    branch_config = branch_config or get_default_branch_config(app_config)
     if (branch_config.translation_direction or "").strip().lower() != "ru_to_en":
         return
 

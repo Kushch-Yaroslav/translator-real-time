@@ -457,6 +457,37 @@ def set_loopback_volume_percent(
     return False
 
 
+def set_sink_input_volume_percent(
+    sink_input_id: str,
+    percent: int,
+    *,
+    unmute: bool = True,
+) -> bool:
+    if not sink_input_id:
+        return False
+
+    percent = max(0, min(150, int(percent)))
+
+    try:
+        if unmute:
+            subprocess.run(
+                ["pactl", "set-sink-input-mute", sink_input_id, "0"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        subprocess.run(
+            ["pactl", "set-sink-input-volume", sink_input_id, f"{percent}%"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return True
+    except Exception:
+        return False
+
+
 def _list_sink_inputs() -> list[dict]:
     output = _run_command(["pactl", "-f", "json", "list", "sink-inputs"])
     return json.loads(output)
@@ -706,6 +737,16 @@ def move_app_playback_to_sink(
                     capture_output=True,
                     text=True,
                 )
+                volume_fixed = set_sink_input_volume_percent(
+                    sink_input_id,
+                    100,
+                    unmute=True,
+                )
+                if logger is not None:
+                    logger(
+                        "Audio routing | ensured sink-input volume "
+                        f"index={sink_input_id} percent=100 mute=off -> {'OK' if volume_fixed else 'FAILED'}"
+                    )
                 return True
             elif logger is not None:
                 logger("Audio routing | sink-input not found yet")

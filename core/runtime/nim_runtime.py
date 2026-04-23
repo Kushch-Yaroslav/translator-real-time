@@ -9,7 +9,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from core.app_config import AppConfig, TranslationBranchConfig, get_primary_branch_config, load_app_config
+from core.config.app_config import AppConfig, TranslationBranchConfig, get_default_branch_config, load_app_config
 
 
 DEFAULT_CONTAINER_ID = "parakeet-1-1b-ctc-en-us"
@@ -17,7 +17,7 @@ DEFAULT_NIM_TAGS_SELECTOR = "name=parakeet-1-1b-ctc-en-us,mode=str,diarizer=disa
 DEFAULT_LOCAL_NIM_CACHE = "/media/yaroslav/DATA/nim-cache"
 DEFAULT_HTTP_PORT = 9000
 DEFAULT_GRPC_PORT = 50051
-DEFAULT_ENV_FILE = str(Path(__file__).resolve().parent.parent / ".env")
+DEFAULT_ENV_FILE = str(Path(__file__).resolve().parent.parent.parent / ".env")
 
 
 @dataclass
@@ -63,10 +63,13 @@ def ensure_nim_runtime(config: NIMRuntimeConfig | None = None) -> None:
     _wait_until_ready(config)
 
 
-def ensure_nim_runtime_for_app_config(app_config: AppConfig | None = None) -> None:
+def ensure_nim_runtime_for_app_config(
+    app_config: AppConfig | None = None,
+    branch_config: TranslationBranchConfig | None = None,
+) -> None:
     app_config = app_config or load_app_config()
-    branch_config = get_primary_branch_config(app_config)
-    ensure_nim_runtime(config_from_branch(branch_config))
+    runtime_branch_config = branch_config or get_default_branch_config(app_config)
+    ensure_nim_runtime(config_from_branch(runtime_branch_config))
 
 
 def config_from_branch(branch_config: TranslationBranchConfig) -> NIMRuntimeConfig:

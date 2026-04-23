@@ -5,7 +5,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
-DEFAULT_LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+DEFAULT_LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
 DEFAULT_LOG_FILE = DEFAULT_LOG_DIR / "app.log"
 DEFAULT_MAX_BYTES = 512 * 1024
 DEFAULT_BACKUP_COUNT = 5

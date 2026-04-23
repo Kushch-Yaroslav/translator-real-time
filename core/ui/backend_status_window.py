@@ -11,7 +11,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.backend_manager import BackendManager
+from core.runtime.backend_manager import BackendManager
+from core.pipeline.branch_definitions import LISTEN_LANE_DEFINITION, SPEAK_LANE_DEFINITION
 
 
 class BackendStatusWindow(QWidget):
@@ -33,8 +34,12 @@ class BackendStatusWindow(QWidget):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        self.en_group = self._build_backend_group("EN=>RU whisper.cpp")
-        self.ru_group = self._build_backend_group("RU=>EN faster-whisper")
+        self.en_group = self._build_backend_group(
+            LISTEN_LANE_DEFINITION.backend_title or LISTEN_LANE_DEFINITION.title
+        )
+        self.ru_group = self._build_backend_group(
+            SPEAK_LANE_DEFINITION.backend_title or SPEAK_LANE_DEFINITION.title
+        )
         layout.addWidget(self.en_group["box"])
         layout.addWidget(self.ru_group["box"])
 
@@ -75,8 +80,8 @@ class BackendStatusWindow(QWidget):
             for status in self.backend_manager.get_status_snapshot()
         }
 
-        self._apply_status(self.en_group, statuses.get("en_to_ru"))
-        self._apply_status(self.ru_group, statuses.get("ru_to_en"))
+        self._apply_status(self.en_group, statuses.get(LISTEN_LANE_DEFINITION.backend_id))
+        self._apply_status(self.ru_group, statuses.get(SPEAK_LANE_DEFINITION.backend_id))
 
     def _apply_status(self, group: dict[str, QWidget], status) -> None:
         if status is None:

@@ -8,20 +8,20 @@ from typing import Optional, Callable
 
 import numpy as np
 
-from core.audio_session import AudioSession, AudioSessionConfig
-from core.chunk_processor import (
+from core.audio.audio_session import AudioSession, AudioSessionConfig
+from core.audio.chunk_processor import (
     ChunkProcessor,
     ChunkProcessorConfig,
     ProcessingMode,
 )
-from core.audio_service import (
+from core.audio.audio_service import (
     log_audio_routing_snapshot,
     move_app_playback_to_sink,
     move_app_recording_to_source,
     snapshot_sink_input_ids,
     snapshot_source_output_ids,
 )
-from core.app_config import AppConfig, DEFAULT_CONFIG, TranslationBranchConfig, get_primary_branch_config
+from core.config.app_config import AppConfig, DEFAULT_CONFIG, TranslationBranchConfig, get_default_branch_config
 from core.sst.confirm_stt_factory import create_confirm_stt_service
 from core.sst.confirm_stt_service import ConfirmSTTService
 from core.sst.realtime_stt_factory import create_realtime_stt_service
@@ -46,13 +46,18 @@ class AudioEngine:
         "welcome to the american league of legends",
     })
 
-    def __init__(self, app_config: AppConfig | None = None):
+    def __init__(
+        self,
+        app_config: AppConfig | None = None,
+        active_branch_config: TranslationBranchConfig | None = None,
+    ):
         self.session: Optional[AudioSession] = None
         self.worker_thread: Optional[threading.Thread] = None
         self.phrase_worker_thread: Optional[threading.Thread] = None
         self.final_worker_thread: Optional[threading.Thread] = None
         self.running = False
         self.app_config = app_config or DEFAULT_CONFIG
+        self.active_branch_config = active_branch_config or get_default_branch_config(self.app_config)
 
         self.on_log: Optional[Callable[[str], None]] = None
         self.on_error: Optional[Callable[[str], None]] = None
@@ -1212,6 +1217,8 @@ class AudioEngine:
     def _uses_low_latency_direct_pipeline(self) -> bool:
         backend = (self.app_config.stt.backend or "nim").strip().lower()
         if backend == "faster_whisper":
+            if not self.app_config.stt.partial_emit_enabled:
+                return False
             return True
         if backend == "whisper_cpp":
             branch_config = self._get_active_branch_config()
@@ -1382,7 +1389,7 @@ class AudioEngine:
         if completed_sentences:
             return self._normalize_text(completed_sentences[0])
 
-        if self._low_latency_partial_repeat_count >= 2 and len(normalized.split()) >= 6:
+        if self._low_latency_partial_repeat_count >= 3 and len(normalized.split()) >= 8:
             return normalized
 
         return ""
@@ -1395,7 +1402,7 @@ class AudioEngine:
         backend = (self.app_config.stt.backend or "nim").strip().lower()
         if backend == "whisper_cpp":
             return max(4, self.app_config.stt.partial_min_words)
-        return max(5, self.app_config.stt.partial_min_words)
+        return max(6, self.app_config.stt.partial_min_words)
 
     def _select_low_latency_followup_partial_candidate(self, normalized: str) -> str:
         return self._select_low_latency_followup_partial_candidate_from_anchor(
@@ -1972,7 +1979,7 @@ class AudioEngine:
             self._log(message)
 
     def _get_active_branch_config(self) -> TranslationBranchConfig:
-        return get_primary_branch_config(self.app_config)
+        return self.active_branch_config
 
     def _enqueue_boundary_sentence(self, text: str) -> None:
         text = self._normalize_text(text)

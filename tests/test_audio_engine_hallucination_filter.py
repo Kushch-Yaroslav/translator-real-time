@@ -1,5 +1,5 @@
-from core.app_config import DEFAULT_CONFIG
-from core.audio_engine import AudioEngine
+from core.config.app_config import DEFAULT_CONFIG
+from core.audio.audio_engine import AudioEngine
 
 
 def test_strip_known_stt_hallucination_tail_drops_standalone_phrase() -> None:

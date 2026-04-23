@@ -1,21 +1,21 @@
 from dataclasses import replace
 
-from core.app_config import DEFAULT_CONFIG
-from core.audio_engine import AudioEngine
+from core.config.app_config import DEFAULT_CONFIG, LISTEN_BRANCH_ID, get_branch_config, replace_branch_config
+from core.audio.audio_engine import AudioEngine
 
 
 def _build_engine(direction: str, backend: str = "faster_whisper") -> AudioEngine:
-    config = replace(
-        DEFAULT_CONFIG,
-        stt=replace(DEFAULT_CONFIG.stt, backend=backend),
-        branches=replace(
-            DEFAULT_CONFIG.branches,
-            primary=replace(
-                DEFAULT_CONFIG.branches.primary,
-                translation_direction=direction,
-                stt_language="ru-RU" if direction == "ru_to_en" else "en-US",
-            ),
+    branch_config = replace(
+        get_branch_config(DEFAULT_CONFIG, LISTEN_BRANCH_ID),
+        translation_direction=direction,
+        stt_language="ru-RU" if direction == "ru_to_en" else "en-US",
+    )
+    config = replace_branch_config(
+        replace(
+            DEFAULT_CONFIG,
+            stt=replace(DEFAULT_CONFIG.stt, backend=backend),
         ),
+        branch_config,
     )
     return AudioEngine(config)
 
@@ -30,6 +30,16 @@ def test_low_latency_direct_pipeline_enabled_for_faster_whisper_ru_to_en() -> No
     engine = _build_engine("ru_to_en")
 
     assert engine._uses_low_latency_direct_pipeline() is True
+
+
+def test_low_latency_direct_pipeline_disabled_when_partials_are_disabled() -> None:
+    engine = _build_engine("ru_to_en")
+    engine.app_config = replace(
+        engine.app_config,
+        stt=replace(engine.app_config.stt, partial_emit_enabled=False),
+    )
+
+    assert engine._uses_low_latency_direct_pipeline() is False
 
 
 def test_low_latency_direct_pipeline_enabled_for_whispercpp_en_to_ru() -> None:

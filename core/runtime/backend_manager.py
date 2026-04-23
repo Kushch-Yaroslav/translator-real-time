@@ -7,8 +7,11 @@ import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from core.app_config import AppConfig
-from core.audio_engine import AudioEngine
+from core.config.app_config import AppConfig
+from core.pipeline.branch_definitions import (
+    LISTEN_LANE_DEFINITION,
+    SPEAK_LANE_DEFINITION,
+)
 
 
 @dataclass
@@ -19,44 +22,6 @@ class BackendStatus:
     detail: str
     managed: bool = False
     pid: int | None = None
-
-
-def build_ru_to_en_runtime_config(base_config: AppConfig) -> AppConfig:
-    secondary_branch = replace(base_config.branches.secondary, enabled=True)
-    primary_branch = replace(secondary_branch, branch_id="primary")
-    return replace(
-        base_config,
-        stt=replace(
-            base_config.stt,
-            backend="faster_whisper",
-            language=primary_branch.stt_language,
-            commit_interval_sec=0.35,
-            final_debounce_sec=0.45,
-            partial_emit_enabled=True,
-            partial_stability_sec=0.45,
-            partial_min_words=4,
-            silero_partial_interval_sec=0.35,
-            silero_min_window_sec=0.9,
-            silero_max_window_sec=6.0,
-            silero_min_silence_ms=180,
-            silero_speech_pad_ms=80,
-            silero_preroll_sec=0.25,
-        ),
-        branches=replace(
-            base_config.branches,
-            primary=primary_branch,
-        ),
-        translation=replace(
-            base_config.translation,
-            direction=primary_branch.translation_direction,
-            enabled=primary_branch.enabled,
-        ),
-        tts=replace(
-            base_config.tts,
-            voice_name=primary_branch.tts_voice_name,
-        ),
-    )
-
 
 class BackendManager:
     def __init__(self, base_config: AppConfig, root_dir: str | Path):
@@ -72,18 +37,16 @@ class BackendManager:
         self._ru_warming = False
         self._ru_stop_requested = False
 
-        self._ru_engine = AudioEngine(build_ru_to_en_runtime_config(base_config))
-
         self._statuses: dict[str, BackendStatus] = {
-            "en_to_ru": BackendStatus(
-                backend_id="en_to_ru",
-                title="EN=>RU whisper.cpp",
+            LISTEN_LANE_DEFINITION.backend_id: BackendStatus(
+                backend_id=LISTEN_LANE_DEFINITION.backend_id,
+                title=LISTEN_LANE_DEFINITION.backend_title or LISTEN_LANE_DEFINITION.title,
                 state="checking",
                 detail="Проверка backend-а...",
             ),
-            "ru_to_en": BackendStatus(
-                backend_id="ru_to_en",
-                title="RU=>EN faster-whisper",
+            SPEAK_LANE_DEFINITION.backend_id: BackendStatus(
+                backend_id=SPEAK_LANE_DEFINITION.backend_id,
+                title=SPEAK_LANE_DEFINITION.backend_title or SPEAK_LANE_DEFINITION.title,
                 state="checking",
                 detail="Проверка встроенного runtime...",
             ),
@@ -97,16 +60,13 @@ class BackendManager:
         with self._lock:
             return [replace(status) for status in self._statuses.values()]
 
-    def get_ru_to_en_engine(self) -> AudioEngine:
-        return self._ru_engine
-
     def start_en_to_ru_async(self) -> None:
         with self._lock:
             if self._whispercpp_starting:
                 return
             self._whispercpp_starting = True
             self._set_status(
-                "en_to_ru",
+                LISTEN_LANE_DEFINITION.backend_id,
                 state="starting",
                 detail="Поднимается whisper.cpp сервер...",
             )
@@ -142,7 +102,7 @@ class BackendManager:
                     pass
             self._close_whispercpp_log_handle()
             self._set_status(
-                "en_to_ru",
+                LISTEN_LANE_DEFINITION.backend_id,
                 state="stopped",
                 detail="whisper.cpp сервер остановлен.",
             )
@@ -150,14 +110,14 @@ class BackendManager:
 
         if self._is_whispercpp_reachable():
             self._set_status(
-                "en_to_ru",
+                LISTEN_LANE_DEFINITION.backend_id,
                 state="running",
                 detail="whisper.cpp сервер уже работает вне приложения.",
             )
             return
 
         self._set_status(
-            "en_to_ru",
+            LISTEN_LANE_DEFINITION.backend_id,
             state="stopped",
             detail="whisper.cpp сервер остановлен.",
         )
@@ -169,7 +129,7 @@ class BackendManager:
             self._ru_warming = True
             self._ru_stop_requested = False
             self._set_status(
-                "ru_to_en",
+                SPEAK_LANE_DEFINITION.backend_id,
                 state="starting",
                 detail="Подготовка встроенного faster-whisper runtime...",
             )
@@ -192,14 +152,8 @@ class BackendManager:
             self._ru_stop_requested = True
             self._ru_warming = False
 
-        try:
-            self._ru_engine.set_translation_paused(False)
-            self._ru_engine.stop()
-        except Exception:
-            pass
-
         self._set_status(
-            "ru_to_en",
+            SPEAK_LANE_DEFINITION.backend_id,
             state="stopped",
             detail="Встроенный faster-whisper runtime остановлен.",
         )
@@ -208,7 +162,7 @@ class BackendManager:
         try:
             if self._is_whispercpp_reachable():
                 self._set_status(
-                    "en_to_ru",
+                    LISTEN_LANE_DEFINITION.backend_id,
                     state="ready",
                     detail="whisper.cpp сервер уже доступен.",
                 )
@@ -234,7 +188,7 @@ class BackendManager:
             while time.monotonic() < deadline:
                 if self._is_whispercpp_reachable():
                     self._set_status(
-                        "en_to_ru",
+                        LISTEN_LANE_DEFINITION.backend_id,
                         state="ready",
                         detail="whisper.cpp сервер готов.",
                         managed=True,
@@ -250,7 +204,7 @@ class BackendManager:
             raise RuntimeError("timeout while waiting for whisper.cpp server")
         except Exception as error:
             self._set_status(
-                "en_to_ru",
+                LISTEN_LANE_DEFINITION.backend_id,
                 state="error",
                 detail=f"Ошибка запуска: {error}",
             )
@@ -266,13 +220,13 @@ class BackendManager:
     def _start_ru_to_en_worker(self) -> None:
         try:
             self._set_status(
-                "ru_to_en",
+                SPEAK_LANE_DEFINITION.backend_id,
                 state="ready",
                 detail="Встроенный faster-whisper runtime готов к запуску пайплайна.",
             )
         except Exception as error:
             self._set_status(
-                "ru_to_en",
+                SPEAK_LANE_DEFINITION.backend_id,
                 state="error",
                 detail=f"Ошибка прогрева: {error}",
             )
@@ -285,22 +239,20 @@ class BackendManager:
             self._ru_stop_requested = False
             self._ru_warming = True
             self._set_status(
-                "ru_to_en",
+                SPEAK_LANE_DEFINITION.backend_id,
                 state="starting",
                 detail="Обновление встроенного faster-whisper runtime...",
             )
 
         try:
-            self._ru_engine.set_translation_paused(False)
-            self._ru_engine.stop()
             self._set_status(
-                "ru_to_en",
+                SPEAK_LANE_DEFINITION.backend_id,
                 state="ready",
                 detail="Встроенный faster-whisper runtime готов к запуску пайплайна.",
             )
         except Exception as error:
             self._set_status(
-                "ru_to_en",
+                SPEAK_LANE_DEFINITION.backend_id,
                 state="error",
                 detail=f"Ошибка перезапуска: {error}",
             )

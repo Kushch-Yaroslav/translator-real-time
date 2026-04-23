@@ -7,7 +7,7 @@ from typing import Optional, Callable
 
 import numpy as np
 
-from core.audio_utils import create_input_stream, create_output_stream, stop_stream
+from core.audio.audio_utils import create_input_stream, create_output_stream, stop_stream
 
 
 @dataclass

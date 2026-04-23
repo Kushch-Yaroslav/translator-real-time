@@ -2,10 +2,10 @@ import faulthandler
 import sys
 from pathlib import Path
 from PySide6.QtWidgets import QApplication
-from core.backend_manager import BackendManager
-from core.backend_status_window import BackendStatusWindow
-from core.main_window import MainWindow
-from core.app_config import load_app_config
+from core.runtime.backend_manager import BackendManager
+from core.ui.backend_status_window import BackendStatusWindow
+from core.ui.main_window import MainWindow
+from core.config.app_config import get_default_branch_config, load_app_config
 
 
 def _startup_log(message: str) -> None:
@@ -29,11 +29,12 @@ def main():
     try:
         _startup_log("loading app config")
         app_config = load_app_config()
+        default_branch = get_default_branch_config(app_config)
         _startup_log(
             "app config loaded: "
             f"backend={app_config.stt.backend}, "
-            f"direction={app_config.branches.primary.translation_direction}, "
-            f"nim_container={app_config.branches.primary.nim_container_id}"
+            f"direction={default_branch.translation_direction}, "
+            f"nim_container={default_branch.nim_container_id}"
         )
     except Exception as error:
         _startup_log(f"Config startup error: {error}")
