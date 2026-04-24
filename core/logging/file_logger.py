@@ -7,6 +7,7 @@ from pathlib import Path
 
 DEFAULT_LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
 DEFAULT_LOG_FILE = DEFAULT_LOG_DIR / "app.log"
+DEFAULT_SPEAK_LOG_FILE = DEFAULT_LOG_DIR / "speak_ru_to_en.log"
 DEFAULT_MAX_BYTES = 512 * 1024
 DEFAULT_BACKUP_COUNT = 5
 
@@ -18,6 +19,10 @@ class AppFileLogger:
         self._logger = logging.getLogger("translator_app")
         self._logger.setLevel(logging.INFO)
         self._logger.propagate = False
+
+        self._speak_logger = logging.getLogger("translator_speak_ru_to_en")
+        self._speak_logger.setLevel(logging.INFO)
+        self._speak_logger.propagate = False
 
         if not self._logger.handlers:
             handler = RotatingFileHandler(
@@ -34,14 +39,37 @@ class AppFileLogger:
             )
             self._logger.addHandler(handler)
 
+        if not self._speak_logger.handlers:
+            handler = RotatingFileHandler(
+                DEFAULT_SPEAK_LOG_FILE,
+                maxBytes=DEFAULT_MAX_BYTES,
+                backupCount=DEFAULT_BACKUP_COUNT,
+                encoding="utf-8",
+            )
+            handler.setFormatter(
+                logging.Formatter(
+                    fmt="%(asctime)s | %(levelname)s | %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S",
+                )
+            )
+            self._speak_logger.addHandler(handler)
+
     @property
     def log_path(self) -> Path:
         return DEFAULT_LOG_FILE
 
+    @property
+    def speak_log_path(self) -> Path:
+        return DEFAULT_SPEAK_LOG_FILE
+
     def session_started(self) -> None:
         self._logger.info("=" * 24 + " session started " + "=" * 24)
+        self._speak_logger.info("=" * 20 + " speak session started " + "=" * 20)
 
     def info(self, message: str) -> None:
+        if message and message.startswith("[SPEAK] "):
+            # Always persist RU=>EN branch logs for debugging (can be noisy by design).
+            self._speak_logger.info(message)
         if self._should_persist_info(message):
             self._logger.info(message)
 
@@ -108,6 +136,8 @@ class AppFileLogger:
             "PARTIAL promoted:",
             "LOWLAT partial queued:",
             "LOWLAT final queued:",
+            "LOWLAT sentence queued:",
+            "LOWLAT sentence stream:",
             "LOWLAT final skipped:",
             "LOWLAT skipped:",
             "Translation time:",
