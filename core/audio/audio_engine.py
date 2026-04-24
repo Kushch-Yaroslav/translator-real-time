@@ -4,6 +4,7 @@ import threading
 import queue
 import re
 import time
+from difflib import SequenceMatcher
 from typing import Optional, Callable
 
 import numpy as np
@@ -781,6 +782,10 @@ class AudioEngine:
         if audio.size == 0:
             return
 
+        audio = self._trim_tts_audio_silence(audio)
+        if audio.size == 0:
+            return
+
         if audio.ndim == 1:
             audio = audio.reshape(-1, 1)
 
@@ -811,6 +816,26 @@ class AudioEngine:
                 continue
 
             offset += self.current_blocksize
+
+    def _trim_tts_audio_silence(self, audio: np.ndarray) -> np.ndarray:
+        if audio.size == 0:
+            return audio
+
+        mono = audio[:, 0] if audio.ndim == 2 else audio
+        if mono.size == 0:
+            return audio
+
+        threshold = 0.0035
+        active_indices = np.flatnonzero(np.abs(mono) >= threshold)
+        if active_indices.size == 0:
+            return audio
+
+        pad_frames = int(0.03 * self.current_samplerate)
+        start = max(0, int(active_indices[0]) - pad_frames)
+        end = min(int(mono.shape[0]), int(active_indices[-1]) + pad_frames + 1)
+        if audio.ndim == 2:
+            return audio[start:end, :]
+        return audio[start:end]
 
     def _trim_output_queue_if_needed(self, session: AudioSession) -> None:
         if self._uses_low_latency_direct_pipeline():
@@ -2061,11 +2086,28 @@ class AudioEngine:
         phrase_norm = self._normalize_compare_text(phrase)
         if not phrase_norm:
             return ""
+        phrase_words = phrase.split()
+        phrase_norm_words = phrase_norm.split()
 
         for emitted_phrase in reversed(self._ru_to_en_emitted_phrases[-8:]):
             emitted_norm = self._normalize_compare_text(emitted_phrase)
             if not emitted_norm:
                 continue
+            emitted_norm_words = emitted_norm.split()
+
+            if self._is_ru_to_en_near_duplicate_phrase(phrase_norm, emitted_norm):
+                return ""
+
+            common_prefix_len = 0
+            for emitted_word, phrase_word in zip(emitted_norm_words, phrase_norm_words):
+                if emitted_word != phrase_word:
+                    break
+                common_prefix_len += 1
+
+            if 0 < common_prefix_len < len(phrase_norm_words):
+                remaining_raw_words = phrase_words[common_prefix_len:]
+                if remaining_raw_words:
+                    return self._normalize_text(" ".join(remaining_raw_words))
 
             incremental = self._normalize_text(
                 self._extract_incremental_text(emitted_phrase, phrase)
@@ -2093,6 +2135,31 @@ class AudioEngine:
         if len(self._ru_to_en_emitted_phrases) > 24:
             self._ru_to_en_emitted_phrases = self._ru_to_en_emitted_phrases[-24:]
 
+    @staticmethod
+    def _is_ru_to_en_near_duplicate_phrase(phrase_norm: str, emitted_norm: str) -> bool:
+        if not phrase_norm or not emitted_norm or phrase_norm == emitted_norm:
+            return phrase_norm == emitted_norm
+
+        phrase_words = phrase_norm.split()
+        emitted_words = emitted_norm.split()
+        if len(phrase_words) < 4 or len(emitted_words) < 4:
+            return False
+
+        common_prefix_len = 0
+        for left, right in zip(phrase_words, emitted_words):
+            if left != right:
+                break
+            common_prefix_len += 1
+
+        if common_prefix_len < 4:
+            return False
+
+        if abs(len(phrase_words) - len(emitted_words)) > 1:
+            return False
+
+        similarity = SequenceMatcher(None, phrase_norm, emitted_norm).ratio()
+        return similarity >= 0.84
+
     def _should_skip_ru_to_en_overlap_phrase(self, phrase: str) -> bool:
         phrase_norm = self._normalize_compare_text(phrase)
         if not phrase_norm:
@@ -2113,8 +2180,10 @@ class AudioEngine:
             emitted_phrase_norm = self._normalize_compare_text(emitted_phrase)
             if (
                 emitted_phrase_norm
-                and len(phrase_words) <= 6
-                and f" {phrase_norm} " in f" {emitted_phrase_norm} "
+                and (
+                    (len(phrase_words) <= 6 and f" {phrase_norm} " in f" {emitted_phrase_norm} ")
+                    or self._is_ru_to_en_near_duplicate_phrase(phrase_norm, emitted_phrase_norm)
+                )
             ):
                 return True
 
