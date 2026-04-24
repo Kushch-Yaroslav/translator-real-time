@@ -133,7 +133,37 @@ class TranslationService:
             for source, target in replacements.items():
                 text = text.replace(source, target)
 
+            text = self._collapse_repeated_en_clause(text)
+
         return " ".join(text.split())
+
+    @staticmethod
+    def _collapse_repeated_en_clause(text: str) -> str:
+        compact = " ".join((text or "").strip().split())
+        if not compact:
+            return ""
+
+        repeated_clause_patterns = (
+            re.compile(
+                r"(?is)^if there is no ([a-z][a-z' -]+), then there is no \1[.!?]?$"
+            ),
+            re.compile(
+                r"(?is)^if there's no ([a-z][a-z' -]+), then there's no \1[.!?]?$"
+            ),
+            re.compile(
+                r"(?is)^there is no ([a-z][a-z' -]+), there is no \1[.!?]?$"
+            ),
+            re.compile(
+                r"(?is)^there's no ([a-z][a-z' -]+), there's no \1[.!?]?$"
+            ),
+        )
+        for pattern in repeated_clause_patterns:
+            match = pattern.fullmatch(compact)
+            if match:
+                noun_phrase = " ".join(match.group(1).split())
+                return f"There is no {noun_phrase}."
+
+        return compact
 
     def _translate_name_intro_template(self, text: str) -> str:
         if self.config.direction != TranslationDirection.EN_TO_RU:

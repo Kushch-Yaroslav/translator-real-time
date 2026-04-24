@@ -737,6 +737,10 @@ class AudioEngine:
             if not self.running or self._translation_paused:
                 continue
 
+            text = self._collect_adjacent_tts_text(text)
+            if not text:
+                continue
+
             tts_service = self.tts_service
             if tts_service is None:
                 continue
@@ -761,6 +765,42 @@ class AudioEngine:
             )
             self._log(f"TTS audio ready: {duration:.2f} sec")
             self._enqueue_tts_audio(tts_audio)
+
+    def _collect_adjacent_tts_text(self, first_text: str) -> str:
+        merged_parts = [self._normalize_text(first_text)]
+        if not merged_parts[0]:
+            return ""
+
+        started_at = time.monotonic()
+        max_wait_sec = 0.06
+        max_parts = 3
+        max_chars = 160
+
+        while len(merged_parts) < max_parts and (time.monotonic() - started_at) < max_wait_sec:
+            timeout = max(0.0, max_wait_sec - (time.monotonic() - started_at))
+            try:
+                next_text, _samplerate = self.tts_text_queue.get(timeout=timeout)
+            except queue.Empty:
+                break
+
+            next_text = self._normalize_text(next_text)
+            if not next_text:
+                continue
+
+            candidate = " ".join(merged_parts + [next_text]).strip()
+            if len(candidate) > max_chars:
+                try:
+                    self.tts_text_queue.put_nowait((next_text, self.current_samplerate))
+                except queue.Full:
+                    self._handle_error("TTS text queue is full, dropping deferred chunk")
+                break
+
+            merged_parts.append(next_text)
+
+        merged_text = " ".join(part for part in merged_parts if part).strip()
+        if len(merged_parts) > 1:
+            self._log(f"TTS merged batch: {len(merged_parts)} chunks")
+        return merged_text
 
     def _should_output_processed_audio(self) -> bool:
         if self.processor is None:
@@ -2086,6 +2126,7 @@ class AudioEngine:
         phrase_norm = self._normalize_compare_text(phrase)
         if not phrase_norm:
             return ""
+        comparable_phrase_norm = self._normalize_ru_to_en_dedup_phrase(phrase)
         phrase_words = phrase.split()
         phrase_norm_words = phrase_norm.split()
 
@@ -2093,9 +2134,10 @@ class AudioEngine:
             emitted_norm = self._normalize_compare_text(emitted_phrase)
             if not emitted_norm:
                 continue
+            comparable_emitted_norm = self._normalize_ru_to_en_dedup_phrase(emitted_phrase)
             emitted_norm_words = emitted_norm.split()
 
-            if self._is_ru_to_en_near_duplicate_phrase(phrase_norm, emitted_norm):
+            if self._is_ru_to_en_near_duplicate_phrase(comparable_phrase_norm, comparable_emitted_norm):
                 return ""
 
             common_prefix_len = 0
@@ -2119,7 +2161,7 @@ class AudioEngine:
             if phrase_norm == emitted_norm:
                 return ""
 
-            if len(phrase_norm.split()) <= 6 and f" {phrase_norm} " in f" {emitted_norm} ":
+            if len(comparable_phrase_norm.split()) <= 6 and f" {comparable_phrase_norm} " in f" {comparable_emitted_norm} ":
                 return ""
 
         return phrase
@@ -2164,30 +2206,32 @@ class AudioEngine:
         phrase_norm = self._normalize_compare_text(phrase)
         if not phrase_norm:
             return True
+        comparable_phrase_norm = self._normalize_ru_to_en_dedup_phrase(phrase)
 
         emitted_norm = self._normalize_compare_text(self._low_latency_emitted_text)
         if not emitted_norm:
             return False
+        comparable_emitted_norm = self._normalize_ru_to_en_dedup_phrase(self._low_latency_emitted_text)
 
-        if phrase_norm == emitted_norm:
+        if comparable_phrase_norm == comparable_emitted_norm:
             return True
 
-        phrase_words = phrase_norm.split()
-        if len(phrase_words) <= 5 and f" {phrase_norm} " in f" {emitted_norm} ":
+        phrase_words = comparable_phrase_norm.split()
+        if len(phrase_words) <= 5 and f" {comparable_phrase_norm} " in f" {comparable_emitted_norm} ":
             return True
 
         for emitted_phrase in reversed(self._ru_to_en_emitted_phrases[-8:]):
-            emitted_phrase_norm = self._normalize_compare_text(emitted_phrase)
+            emitted_phrase_norm = self._normalize_ru_to_en_dedup_phrase(emitted_phrase)
             if (
                 emitted_phrase_norm
                 and (
-                    (len(phrase_words) <= 6 and f" {phrase_norm} " in f" {emitted_phrase_norm} ")
-                    or self._is_ru_to_en_near_duplicate_phrase(phrase_norm, emitted_phrase_norm)
+                    (len(phrase_words) <= 6 and f" {comparable_phrase_norm} " in f" {emitted_phrase_norm} ")
+                    or self._is_ru_to_en_near_duplicate_phrase(comparable_phrase_norm, emitted_phrase_norm)
                 )
             ):
                 return True
 
-        emitted_words = emitted_norm.split()
+        emitted_words = comparable_emitted_norm.split()
         max_overlap = min(len(phrase_words), len(emitted_words), 6)
         for overlap_len in range(max_overlap, 1, -1):
             if emitted_words[-overlap_len:] == phrase_words[:overlap_len]:
@@ -2196,6 +2240,27 @@ class AudioEngine:
                     return True
 
         return False
+
+    @staticmethod
+    def _normalize_ru_to_en_dedup_phrase(text: str) -> str:
+        normalized = AudioEngine._normalize_compare_text(text)
+        if not normalized:
+            return ""
+
+        leading_linkers = {
+            "и",
+            "а",
+            "но",
+            "ну",
+            "так",
+            "тогда",
+            "потом",
+        }
+        words = normalized.split()
+        while words and words[0] in leading_linkers:
+            words = words[1:]
+
+        return " ".join(words).strip()
 
     def _expire_ru_to_en_pending_phrase(self, now: float) -> None:
         if not self._ru_to_en_pending_phrase_norm:
