@@ -4,6 +4,7 @@ from pathlib import Path
 from PySide6.QtWidgets import QApplication
 from core.runtime.backend_manager import BackendManager
 from core.ui.backend_status_window import BackendStatusWindow
+from core.ui.benchmark_recorder_window import BenchmarkRecorderWindow
 from core.ui.main_window import MainWindow
 from core.config.app_config import get_default_branch_config, load_app_config
 
@@ -56,6 +57,12 @@ def main():
     _startup_log("MainWindow created")
     window.show()
     _startup_log("MainWindow shown")
+
+    _startup_log("creating BenchmarkRecorderWindow")
+    benchmark_window = BenchmarkRecorderWindow()
+    benchmark_window.show()
+    _startup_log("BenchmarkRecorderWindow shown")
+
     _startup_log("entering event loop")
     sys.exit(app.exec())
 
