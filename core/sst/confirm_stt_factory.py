@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.app_config import AppConfig, TranslationBranchConfig
+from core.config.app_config import AppConfig, TranslationBranchConfig
 from core.sst.confirm_stt_service import ConfirmSTTService
 from core.sst.stt_service import STTService
 

@@ -1,0 +1,15 @@
+{
+  "input_path": "/home/yaroslav/Загрузки/Telegram Desktop/audio_2026-04-24_18-06-46.ogg",
+  "duration_sec": 53.1,
+  "backend": "faster_whisper",
+  "language": "ru-RU",
+  "final_text": "Hey, everybody!",
+  "translated_text": "",
+  "events": [
+    {
+      "at_sec": 6.21124788599991,
+      "kind": "final",
+      "text": "Hey, everybody!"
+    }
+  ]
+}

@@ -1,21 +1,21 @@
 from dataclasses import replace
 
-from core.app_config import DEFAULT_CONFIG
-from core.audio_engine import AudioEngine
+from core.config.app_config import DEFAULT_CONFIG, LISTEN_BRANCH_ID, get_branch_config, replace_branch_config
+from core.audio.audio_engine import AudioEngine
 
 
 def _build_engine(direction: str, backend: str = "faster_whisper") -> AudioEngine:
-    config = replace(
-        DEFAULT_CONFIG,
-        stt=replace(DEFAULT_CONFIG.stt, backend=backend),
-        branches=replace(
-            DEFAULT_CONFIG.branches,
-            primary=replace(
-                DEFAULT_CONFIG.branches.primary,
-                translation_direction=direction,
-                stt_language="ru-RU" if direction == "ru_to_en" else "en-US",
-            ),
+    branch_config = replace(
+        get_branch_config(DEFAULT_CONFIG, LISTEN_BRANCH_ID),
+        translation_direction=direction,
+        stt_language="ru-RU" if direction == "ru_to_en" else "en-US",
+    )
+    config = replace_branch_config(
+        replace(
+            DEFAULT_CONFIG,
+            stt=replace(DEFAULT_CONFIG.stt, backend=backend),
         ),
+        branch_config,
     )
     return AudioEngine(config)
 
@@ -32,6 +32,16 @@ def test_low_latency_direct_pipeline_enabled_for_faster_whisper_ru_to_en() -> No
     assert engine._uses_low_latency_direct_pipeline() is True
 
 
+def test_low_latency_direct_pipeline_disabled_when_partials_are_disabled() -> None:
+    engine = _build_engine("ru_to_en")
+    engine.app_config = replace(
+        engine.app_config,
+        stt=replace(engine.app_config.stt, partial_emit_enabled=False),
+    )
+
+    assert engine._uses_low_latency_direct_pipeline() is False
+
+
 def test_low_latency_direct_pipeline_enabled_for_whispercpp_en_to_ru() -> None:
     engine = _build_engine("en_to_ru", backend="whisper_cpp")
 
@@ -44,6 +54,119 @@ def test_low_latency_direct_pipeline_disabled_for_non_faster_whisper() -> None:
 
     assert engine._uses_low_latency_direct_pipeline() is False
 
+
+def test_ru_to_en_final_reconstruction_uses_fragment_buffer() -> None:
+    engine = _build_engine("ru_to_en")
+    engine._remember_ru_to_en_fragment("всем привет")
+    engine._remember_ru_to_en_fragment("меня зовут Ярослав")
+    engine._remember_ru_to_en_fragment("мне 20 6 лет")
+    engine._remember_ru_to_en_fragment("мне 26 лет")
+    engine._remember_ru_to_en_fragment("я из Украины")
+    engine._remember_ru_to_en_fragment("я работал в компании I'm days")
+    engine._remember_ru_to_en_fragment("я работал в компании AMDays")
+
+    assert (
+        engine._reconstruct_ru_to_en_final_text(
+            "я работал в компании AEMDays и делал лендинги"
+        )
+        == "Я работал в компании AEMDays и делал лендинги."
+    )
+
+
+def test_ru_to_en_fragment_buffer_skips_consecutive_duplicates() -> None:
+    engine = _build_engine("ru_to_en")
+
+    engine._remember_ru_to_en_fragment("мне 26 лет")
+    engine._remember_ru_to_en_fragment("мне 26 лет")
+    engine._remember_ru_to_en_fragment("я из Украины")
+
+    assert engine._ru_to_en_current_fragments == [
+        "мне 26 лет",
+        "я из Украины",
+    ]
+
+
+def test_ru_to_en_final_reconstruction_uses_local_fragment_window() -> None:
+    engine = _build_engine("ru_to_en")
+    engine._remember_ru_to_en_fragment("Так как у лейдингов обычно нет сложной логики,")
+    engine._remember_ru_to_en_fragment("то основное влияние на производительность вызывают картинки.")
+    engine._remember_ru_to_en_fragment("Сначала я пользовался бесплатными сервисами.")
+    engine._remember_ru_to_en_fragment("но опирался то в лимит,")
+
+    reconstructed = engine._reconstruct_ru_to_en_final_text(
+        "Сначала я пользовался бесплатными сервисами, но опирался то в лимит, то в отсутствие гибкости."
+    )
+
+    assert "Так как у лейдингов" not in reconstructed
+    assert reconstructed.startswith("Сначала я пользовался бесплатными сервисами")
+
+
+def test_ru_to_en_can_replace_last_emitted_fragment_with_refined_company_phrase() -> None:
+    engine = _build_engine("ru_to_en")
+    engine._remember_ru_to_en_emitted_phrase("я делал лендинги.")
+    engine._remember_ru_to_en_fragment("я делал лендинги.")
+
+    assert engine._replace_last_ru_to_en_emitted_fragment("AMDays я делал лендинги.") is True
+    assert engine._ru_to_en_emitted_phrases[-1] == "AMDays я делал лендинги."
+
+
+def test_ru_to_en_can_replace_last_emitted_fragment_with_refined_wording() -> None:
+    engine = _build_engine("ru_to_en")
+    engine._remember_ru_to_en_emitted_phrase("но упирался то в лимит,")
+    engine._remember_ru_to_en_fragment("но упирался то в лимит,")
+
+    assert engine._replace_last_ru_to_en_emitted_fragment("опирался то в лимит,") is True
+    assert engine._ru_to_en_emitted_phrases[-1] == "опирался то в лимит,"
+
+
+def test_ru_to_en_defers_short_conjunction_partial_phrase() -> None:
+    engine = _build_engine("ru_to_en")
+
+    assert engine._should_defer_ru_to_en_partial_phrase("но упирался то в лимит,") is True
+    assert engine._should_defer_ru_to_en_partial_phrase("я из Украины.") is False
+
+
+def test_ru_to_en_defers_short_landing_phrase_after_company_context() -> None:
+    engine = _build_engine("ru_to_en")
+    engine._remember_ru_to_en_fragment("Когда я работал в компании AMD,")
+
+    assert engine._should_defer_ru_to_en_partial_phrase("я делал лендинги.") is True
+
+
+def test_ru_to_en_defers_short_landing_phrase_from_partial_context() -> None:
+    engine = _build_engine("ru_to_en")
+    engine._ru_to_en_last_partial_context = "Когда я работал в компании AMD, я делал лендинги."
+
+    assert engine._should_defer_ru_to_en_partial_phrase("я делал лендинги.") is True
+
+
+def test_ru_to_en_defers_short_company_prefix_partial_phrase() -> None:
+    engine = _build_engine("ru_to_en")
+
+    assert engine._should_defer_ru_to_en_partial_phrase("Когда я работал в компании AMD,") is True
+    assert engine._should_defer_ru_to_en_partial_phrase("Когда я работал в компании AMDays я делал лендинги.") is False
+
+
+def test_ru_to_en_defers_weaker_comfort_phrase() -> None:
+    engine = _build_engine("ru_to_en")
+
+    assert engine._should_defer_ru_to_en_partial_phrase(
+        "так как мой английский слабее уровня комфорта."
+    ) is True
+    assert engine._should_defer_ru_to_en_partial_phrase(
+        "так как мой английский слабее уровня комфортного общения."
+    ) is False
+
+
+def test_ru_to_en_defers_weaker_free_systems_phrase() -> None:
+    engine = _build_engine("ru_to_en")
+
+    assert engine._should_defer_ru_to_en_partial_phrase(
+        "Сначала я пользовался бесплатными системами."
+    ) is True
+    assert engine._should_defer_ru_to_en_partial_phrase(
+        "Сначала я пользовался бесплатными сервисами."
+    ) is False
 
 
 def test_en_to_ru_partial_candidate_can_emit_first_completed_sentence() -> None:

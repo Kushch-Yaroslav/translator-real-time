@@ -25,6 +25,10 @@ from core.sst.riva_realtime_stt_service import (  # noqa: E402
     RivaRealtimeSTTConfig,
     RivaRealtimeSTTService,
 )
+from core.sst.faster_whisper_realtime_stt_service import (  # noqa: E402
+    FasterWhisperRealtimeSTTConfig,
+    FasterWhisperRealtimeSTTService,
+)
 from core.translation.translation_service import (  # noqa: E402
     TranslationConfig,
     TranslationDirection,
@@ -44,14 +48,16 @@ def parse_args() -> argparse.Namespace:
         description="Анализ Telegram .ogg через realtime STT с таймлайном partial/final."
     )
     parser.add_argument("input_path")
-    parser.add_argument("--stt-backend", choices=("nim", "riva"), default="riva")
+    parser.add_argument("--stt-backend", choices=("nim", "riva", "faster_whisper"), default="faster_whisper")
     parser.add_argument("--language", default="ru-RU")
     parser.add_argument("--direction", choices=("ru_to_en", "en_to_ru"), default="ru_to_en")
+    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--stt-url", default="http://localhost:9000")
     parser.add_argument("--stt-ws-url", default="ws://localhost:9000/v1/realtime?intent=transcription")
     parser.add_argument("--riva-uri", default="localhost:50051")
     parser.add_argument("--chunk-ms", type=int, default=200)
     parser.add_argument("--pace", action="store_true")
+    parser.add_argument("--skip-translation", action="store_true")
     parser.add_argument("--output-json")
     return parser.parse_args()
 
@@ -79,6 +85,27 @@ def decode_audio_to_float32_mono(path: Path) -> tuple[np.ndarray, int]:
 
 
 def build_stt_service(args: argparse.Namespace):
+    if args.stt_backend == "faster_whisper":
+        lang = (args.language or "ru-RU").split("-")[0].lower()
+        return FasterWhisperRealtimeSTTService(
+            FasterWhisperRealtimeSTTConfig(
+                language=lang,
+                sample_rate_hz=16000,
+                device=args.device,
+                partial_interval_sec=0.12,
+                min_window_sec=0.45,
+                max_window_sec=8.0,
+                min_silence_duration_ms=90,
+                speech_pad_ms=40,
+                speech_threshold=0.55,
+                whisper_model_size="large-v3-turbo",
+                compute_type="int8" if args.device == "cpu" else "float16",
+                beam_size=1,
+                best_of=1,
+                patience=1.0,
+                on_log=None,
+            )
+        )
     if args.stt_backend == "riva":
         return RivaRealtimeSTTService(
             RivaRealtimeSTTConfig(
@@ -120,14 +147,19 @@ def main() -> int:
     audio, samplerate = decode_audio_to_float32_mono(input_path)
     service = build_stt_service(args)
 
-    translation_direction = (
-        TranslationDirection.RU_TO_EN
-        if args.direction == "ru_to_en"
-        else TranslationDirection.EN_TO_RU
-    )
-    translation_service = TranslationService(
-        TranslationConfig(direction=translation_direction, enabled=True)
-    )
+    translation_service = None
+    if not args.skip_translation:
+        translation_direction = (
+            TranslationDirection.RU_TO_EN
+            if args.direction == "ru_to_en"
+            else TranslationDirection.EN_TO_RU
+        )
+        try:
+            translation_service = TranslationService(
+                TranslationConfig(direction=translation_direction, enabled=True)
+            )
+        except Exception as error:
+            print(f"translation_unavailable: {error}", file=sys.stderr)
 
     events: list[TimelineEvent] = []
     done_event = threading.Event()
@@ -150,6 +182,8 @@ def main() -> int:
 
     def on_final(text: str) -> None:
         add_event("final", text)
+        # Some backends can emit multiple final segments per file.
+        # We still use done_event as a best-effort "final arrived" signal.
         done_event.set()
 
     service.start(partial_callback=on_partial, final_callback=on_final)
@@ -169,12 +203,15 @@ def main() -> int:
         service.commit()
         service.send_done()
         done_event.wait(timeout=12.0)
+        # Give embedded faster-whisper a short moment to flush queued finals.
+        if args.stt_backend == "faster_whisper":
+            time.sleep(0.35)
     finally:
         final_text = normalize_text(service.get_last_final_text())
         service.stop()
 
     translated_text = ""
-    if final_text:
+    if final_text and translation_service is not None:
         translated_text = normalize_text(translation_service.translate(final_text))
 
     print(f"file: {input_path}")

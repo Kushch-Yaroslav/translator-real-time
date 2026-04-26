@@ -3,11 +3,11 @@ from __future__ import annotations
 import threading
 import time
 
-import sounddevice as sd
-from PySide6.QtCore import Qt, Signal, QSize, QRectF
+from PySide6.QtCore import Qt, Signal, QSize, QRectF, QTimer
 from PySide6.QtGui import QColor, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -19,9 +19,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.app_config import AppConfig, get_default_config_path, load_app_config
-from core.audio_engine import AudioEngine
-from core.audio_service import (
+from core.config.app_config import get_default_config_path, load_app_config
+from core.audio.audio_engine import AudioEngine
+from core.audio.audio_service import (
     TRANSLATOR_LISTEN_SINK_NAME,
     TRANSLATOR_MIC_SOURCE_NAME,
     TRANSLATOR_SINK_NAME,
@@ -36,13 +36,19 @@ from core.audio_service import (
     repair_default_audio_devices,
     set_sink_volume_percent,
     set_loopback_volume_percent,
-    temporary_pulse_stream_properties,
     unload_pulse_module,
 )
-from core.audio_utils import find_sounddevice_device_index_by_name
-from core.backend_manager import BackendManager, build_ru_to_en_runtime_config
-from core.file_logger import AppFileLogger
-from core.stt_runtime import ensure_stt_runtime_for_app_config
+from core.runtime.backend_manager import BackendManager
+from core.pipeline.branch_controller import BranchController
+from core.pipeline.branch_registry import BranchRegistry
+from core.pipeline.branch_definitions import (
+    LISTEN_LANE_DEFINITION,
+    SPEAK_LANE_DEFINITION,
+    get_default_lane_definitions,
+)
+from core.logging.file_logger import AppFileLogger
+from core.pipeline.pipeline_orchestrator import PipelineOrchestrator
+from core.runtime.stt_runtime import ensure_stt_runtime_for_app_config
 
 
 class AudioLevelMeter(QWidget):
@@ -106,9 +112,6 @@ class MainWindow(QWidget):
     ORIGINAL_MODE_MUTED = "muted"
     ORIGINAL_MODE_DUCKED = "ducked"
     ORIGINAL_MODE_FULL = "full"
-    LISTEN_STREAM_TAG = "TranslatorListenEngine"
-    SPEAK_STREAM_TAG = "TranslatorSpeakEngine"
-
     def __init__(self, backend_manager: BackendManager | None = None):
         super().__init__()
 
@@ -121,17 +124,14 @@ class MainWindow(QWidget):
         self.file_logger = AppFileLogger()
         self.file_logger.session_started()
 
-        self.listen_engine = AudioEngine(self._build_listen_config())
-        self.speak_engine = (
-            backend_manager.get_ru_to_en_engine()
-            if backend_manager is not None
-            else AudioEngine(self._build_speak_config())
+        self.branch_registry = BranchRegistry(self.base_config, get_default_lane_definitions())
+        self.pipeline_orchestrator = PipelineOrchestrator(
+            self.branch_registry,
+            engine_factory=self._build_lane_engine,
         )
 
         self.pipeline_running = False
         self.pipeline_starting = False
-        self.listen_active = True
-        self.speak_active = True
 
         self.original_audio_mode = self.ORIGINAL_MODE_DUCKED
         self.original_duck_percent = 50
@@ -157,16 +157,55 @@ class MainWindow(QWidget):
         self.listen_level_signal.connect(self._set_listen_level)
         self.speak_level_signal.connect(self._set_speak_level)
 
-        self.listen_engine.on_log = lambda message: self._emit_log(f"[LISTEN] {message}")
-        self.listen_engine.on_error = lambda message: self._emit_error(f"[LISTEN] {message}")
-        self.listen_engine.on_input_level = self.listen_level_signal.emit
-        self.speak_engine.on_log = lambda message: self._emit_log(f"[SPEAK] {message}")
-        self.speak_engine.on_error = lambda message: self._emit_error(f"[SPEAK] {message}")
-        self.speak_engine.on_input_level = self.speak_level_signal.emit
+        self._bind_branch_engine(self.listen_branch, self.listen_level_signal.emit)
+        self._bind_branch_engine(self.speak_branch, self.speak_level_signal.emit)
 
         self.refresh_routes()
         self._update_controls_state()
         self._start_background_prewarm()
+
+        if self.backend_manager:
+            self.refresh_timer = QTimer(self)
+            self.refresh_timer.setInterval(500)
+            self.refresh_timer.timeout.connect(self.refresh_backend_statuses)
+            self.refresh_timer.start()
+            self.refresh_backend_statuses()
+
+    @property
+    def listen_engine(self) -> AudioEngine:
+        return self.listen_branch.engine
+
+    @property
+    def speak_engine(self) -> AudioEngine:
+        return self.speak_branch.engine
+
+    @property
+    def listen_branch(self) -> BranchController:
+        return self.pipeline_orchestrator.get_controller(LISTEN_LANE_DEFINITION.lane_key)
+
+    @property
+    def speak_branch(self) -> BranchController:
+        return self.pipeline_orchestrator.get_controller(SPEAK_LANE_DEFINITION.lane_key)
+
+    @property
+    def branch_controllers(self) -> tuple[BranchController, ...]:
+        return self.pipeline_orchestrator.list_controllers()
+
+    @property
+    def listen_active(self) -> bool:
+        return self.listen_branch.active
+
+    @listen_active.setter
+    def listen_active(self, value: bool) -> None:
+        self.listen_branch.active = bool(value)
+
+    @property
+    def speak_active(self) -> bool:
+        return self.speak_branch.active
+
+    @speak_active.setter
+    def speak_active(self, value: bool) -> None:
+        self.speak_branch.active = bool(value)
 
     def _build_ui(self) -> None:
         self.main_layout = QVBoxLayout(self)
@@ -186,6 +225,48 @@ class MainWindow(QWidget):
         self.main_layout.addWidget(self._build_speak_group())
         self.main_layout.addWidget(self._build_listen_group())
         self.main_layout.addWidget(self._build_logs_group())
+        if self.backend_manager:
+            self.main_layout.addWidget(self._build_backend_status_group())
+
+    def _build_backend_status_group(self) -> QGroupBox:
+        group = QGroupBox("Статус backend-ов")
+        layout = QHBoxLayout(group)
+
+        self.en_backend_group = self._build_single_backend_status_ui(
+            LISTEN_LANE_DEFINITION.backend_title or LISTEN_LANE_DEFINITION.title
+        )
+        self.ru_backend_group = self._build_single_backend_status_ui(
+            SPEAK_LANE_DEFINITION.backend_title or SPEAK_LANE_DEFINITION.title
+        )
+
+        layout.addWidget(self.en_backend_group["box"], stretch=1)
+        layout.addWidget(self.ru_backend_group["box"], stretch=1)
+        return group
+
+    def _build_single_backend_status_ui(self, title: str) -> dict:
+        box = QGroupBox(title)
+        layout = QGridLayout(box)
+
+        status_label = QLabel("—")
+        detail_label = QLabel("—")
+        detail_label.setWordWrap(True)
+        restart_button = QPushButton("Перезапуск")
+        stop_button = QPushButton("Остановить")
+
+        layout.addWidget(QLabel("Статус:"), 0, 0)
+        layout.addWidget(status_label, 0, 1)
+        layout.addWidget(QLabel("Детали:"), 1, 0)
+        layout.addWidget(detail_label, 1, 1, 1, 2)
+        layout.addWidget(restart_button, 2, 1)
+        layout.addWidget(stop_button, 2, 2)
+
+        return {
+            "box": box,
+            "status_label": status_label,
+            "detail_label": detail_label,
+            "restart_button": restart_button,
+            "stop_button": stop_button,
+        }
 
     def _build_routes_group(self) -> QGroupBox:
         group = QGroupBox("Маршрут")
@@ -230,7 +311,7 @@ class MainWindow(QWidget):
         return group
 
     def _build_speak_group(self) -> QGroupBox:
-        group = QGroupBox("Говорить RU=>EN")
+        group = QGroupBox(self.speak_branch.definition.title)
         layout = QHBoxLayout(group)
 
         self.speak_status_label = QLabel()
@@ -245,7 +326,7 @@ class MainWindow(QWidget):
         return group
 
     def _build_listen_group(self) -> QGroupBox:
-        group = QGroupBox("Слушать EN=>RU")
+        group = QGroupBox(self.listen_branch.definition.title)
         layout = QVBoxLayout(group)
 
         top_row = QHBoxLayout()
@@ -332,6 +413,12 @@ class MainWindow(QWidget):
         self.listen_full_button.clicked.connect(self.set_original_audio_full)
         self.original_volume_slider.valueChanged.connect(self._on_duck_volume_changed)
 
+        if self.backend_manager:
+            self.en_backend_group["restart_button"].clicked.connect(self.backend_manager.restart_en_to_ru_async)
+            self.en_backend_group["stop_button"].clicked.connect(self.backend_manager.stop_en_to_ru)
+            self.ru_backend_group["restart_button"].clicked.connect(self.backend_manager.restart_ru_to_en_async)
+            self.ru_backend_group["stop_button"].clicked.connect(self.backend_manager.stop_ru_to_en)
+
     def refresh_routes(self) -> None:
         try:
             ensure_translator_sink_exists()
@@ -365,6 +452,13 @@ class MainWindow(QWidget):
             return
 
         self.refresh_routes()
+        for branch in self.branch_controllers:
+            self._emit_log(
+                f"{branch.definition.log_prefix} "
+                f"Lane backend={branch.engine.app_config.stt.backend} "
+                f"branch='{branch.engine.active_branch_config.label}' "
+                f"direction='{branch.engine.active_branch_config.translation_direction}'"
+            )
         removed_loopbacks = cleanup_translator_loopbacks(self._emit_log)
         if removed_loopbacks:
             self._emit_log(f"Translator loopbacks cleaned before start: {removed_loopbacks}")
@@ -443,11 +537,14 @@ class MainWindow(QWidget):
 
     def _start_pipeline_worker(self) -> None:
         try:
-            ensure_stt_runtime_for_app_config(self.listen_engine.app_config)
-            ensure_stt_runtime_for_app_config(self.speak_engine.app_config)
+            for branch in self.branch_controllers:
+                ensure_stt_runtime_for_app_config(
+                    branch.engine.app_config,
+                    branch.engine.active_branch_config,
+                )
 
-            self._start_listen_engine()
-            self._start_speak_engine()
+            for branch in self.branch_controllers:
+                self._start_branch(branch)
             time.sleep(0.08)
             self._start_original_loopback()
         except Exception as error:
@@ -502,15 +599,13 @@ class MainWindow(QWidget):
             return
 
         if self.speak_active:
-            self.speak_engine.set_translation_paused(True)
-            self.speak_active = False
+            self.speak_branch.set_paused(True)
             self._start_speak_passthrough_loopback()
-            self._emit_log("Speak RU=>EN paused")
+            self._emit_log(self.speak_branch.definition.paused_log_text)
         else:
             self._stop_speak_passthrough_loopback()
-            self.speak_engine.set_translation_paused(False)
-            self.speak_active = True
-            self._emit_log("Speak RU=>EN resumed")
+            self.speak_branch.set_paused(False)
+            self._emit_log(self.speak_branch.definition.resumed_log_text)
 
         self._update_controls_state()
 
@@ -519,15 +614,13 @@ class MainWindow(QWidget):
             return
 
         if self.listen_active:
-            self.listen_engine.set_translation_paused(True)
-            self.listen_active = False
+            self.listen_branch.set_paused(True)
             self._set_original_loopback_volume(100)
-            self._emit_log("Listen EN=>RU paused")
+            self._emit_log(self.listen_branch.definition.paused_log_text)
         else:
-            self.listen_engine.set_translation_paused(False)
-            self.listen_active = True
+            self.listen_branch.set_paused(False)
             self._apply_current_original_audio_mode(fade_in=True)
-            self._emit_log("Listen EN=>RU resumed")
+            self._emit_log(self.listen_branch.definition.resumed_log_text)
 
         self._update_controls_state()
 
@@ -695,99 +788,53 @@ class MainWindow(QWidget):
             name="speak-audio-fade-in",
         ).start()
 
-    def _start_listen_engine(self) -> None:
-        input_name = self.listen_input_name
-        output_name = self.original_sink_name
-
-        input_index = find_sounddevice_device_index_by_name(
-            input_name,
-            min_input_channels=1,
-            prefer_pulse=True,
-        )
-        output_index = find_sounddevice_device_index_by_name(
-            output_name,
-            min_output_channels=1,
-            prefer_pulse=True,
+    def _start_branch(self, branch: BranchController) -> None:
+        branch.start(
+            input_name=self._resolve_branch_input_name(branch),
+            output_name=self._resolve_branch_output_name(branch),
         )
 
-        if input_index is None:
-            raise RuntimeError(f"Не удалось сопоставить listen input: {input_name}")
-        if output_index is None:
-            raise RuntimeError(f"Не удалось сопоставить listen output: {output_name}")
+    def reassign_lane_branch(self, lane_key: str, branch_id: str) -> None:
+        was_running = self.pipeline_running
+        controller = self.pipeline_orchestrator.get_controller(lane_key)
+        was_active = controller.active
 
-        input_sd_name = sd.query_devices(input_index)["name"]
-        output_sd_name = sd.query_devices(output_index)["name"]
-
-        self._emit_log(f"[LISTEN] Selected pactl input: {input_name}")
-        self._emit_log(f"[LISTEN] Selected pactl output: {output_name}")
-        self._emit_log(f"[LISTEN] Mapped sounddevice input index: {input_index}, name: {input_sd_name}")
-        self._emit_log(f"[LISTEN] Mapped sounddevice output index: {output_index}, name: {output_sd_name}")
-
-        with temporary_pulse_stream_properties(
-            application_name=self.LISTEN_STREAM_TAG,
-            media_name=self.LISTEN_STREAM_TAG,
-        ):
-            self.listen_engine.start(
-                input_device_index=input_index,
-                output_device_index=output_index,
-                selected_pactl_input_name=input_name,
-                selected_pactl_output_name=output_name,
-                samplerate=self.listen_engine.app_config.audio.samplerate,
-                channels=self.listen_engine.app_config.audio.channels,
-                blocksize=self.listen_engine.app_config.audio.blocksize,
-                stt_window_seconds=1.0,
-                pulse_stream_tag=self.LISTEN_STREAM_TAG,
-            )
-
-    def _start_speak_engine(self) -> None:
-        input_name = self.speak_input_name
-        output_name = TRANSLATOR_SINK_NAME
-
-        input_index = find_sounddevice_device_index_by_name(
-            input_name,
-            min_input_channels=1,
-            prefer_pulse=True,
-        )
-        output_index = find_sounddevice_device_index_by_name(
-            output_name,
-            min_output_channels=1,
-            prefer_pulse=True,
+        replacement = self.pipeline_orchestrator.reassign_lane_branch(lane_key, branch_id)
+        self._bind_branch_engine(
+            replacement,
+            self.listen_level_signal.emit
+            if lane_key == LISTEN_LANE_DEFINITION.lane_key
+            else self.speak_level_signal.emit,
         )
 
-        if input_index is None:
-            raise RuntimeError(f"Не удалось сопоставить speak input: {input_name}")
-        if output_index is None:
-            raise RuntimeError(f"Не удалось сопоставить speak output: {output_name}")
+        if not was_running:
+            if not was_active:
+                replacement.set_paused(True)
+            self._update_controls_state()
+            return
 
-        input_sd_name = sd.query_devices(input_index)["name"]
-        output_sd_name = sd.query_devices(output_index)["name"]
+        ensure_stt_runtime_for_app_config(
+            replacement.engine.app_config,
+            replacement.engine.active_branch_config,
+        )
+        self._start_branch(replacement)
+        if not was_active:
+            replacement.set_paused(True)
+        self._update_controls_state()
 
-        self._emit_log(f"[SPEAK] Selected pactl input: {input_name}")
-        self._emit_log(f"[SPEAK] Selected pactl output: {output_name}")
-        self._emit_log(f"[SPEAK] Mapped sounddevice input index: {input_index}, name: {input_sd_name}")
-        self._emit_log(f"[SPEAK] Mapped sounddevice output index: {output_index}, name: {output_sd_name}")
+    def _resolve_branch_input_name(self, branch: BranchController) -> str:
+        if branch.definition.input_route_role == "real_source":
+            return self.speak_input_name
+        if branch.definition.input_route_role == "listen_monitor":
+            return self.listen_input_name
+        raise RuntimeError(f"Unsupported input route role: {branch.definition.input_route_role}")
 
-        with temporary_pulse_stream_properties(
-            application_name=self.SPEAK_STREAM_TAG,
-            media_name=self.SPEAK_STREAM_TAG,
-        ):
-            self.speak_engine.start(
-                input_device_index=input_index,
-                output_device_index=output_index,
-                selected_pactl_input_name=input_name,
-                selected_pactl_output_name=output_name,
-                samplerate=self.speak_engine.app_config.audio.samplerate,
-                channels=self.speak_engine.app_config.audio.channels,
-                blocksize=self.speak_engine.app_config.audio.blocksize,
-                stt_window_seconds=1.0,
-                pulse_stream_tag=self.SPEAK_STREAM_TAG,
-            )
-
-    def _build_listen_config(self) -> AppConfig:
-        return self.base_config
-
-    def _build_speak_config(self) -> AppConfig:
-        return build_ru_to_en_runtime_config(self.base_config)
+    def _resolve_branch_output_name(self, branch: BranchController) -> str:
+        if branch.definition.output_route_role == "real_sink":
+            return self.original_sink_name
+        if branch.definition.output_route_role == "translator_sink":
+            return TRANSLATOR_SINK_NAME
+        raise RuntimeError(f"Unsupported output route role: {branch.definition.output_route_role}")
 
     def _classify_original_audio_mode(self, percent: int) -> str:
         if percent <= 30:
@@ -805,16 +852,27 @@ class MainWindow(QWidget):
         worker.start()
 
     def _background_prewarm(self) -> None:
-        try:
-            self.listen_engine.prewarm_runtime()
-        except Exception as error:
-            self._emit_log(f"Listen runtime prewarm skipped: {error}")
-
-        if self.backend_manager is None:
+        for branch in self.branch_controllers:
+            if self.backend_manager is not None and branch is self.speak_branch:
+                continue
             try:
-                self.speak_engine.prewarm_runtime()
+                branch.prewarm_runtime()
             except Exception as error:
-                self._emit_log(f"Speak runtime prewarm skipped: {error}")
+                self._emit_log(f"{branch.definition.title} runtime prewarm skipped: {error}")
+
+    def _bind_branch_engine(self, branch: BranchController, input_level_handler) -> None:
+        self.pipeline_orchestrator.bind_lane_callbacks(
+            branch.definition.lane_key,
+            emit_log=self._emit_log,
+            emit_error=self._emit_error,
+            emit_input_level=input_level_handler,
+        )
+
+    def _build_lane_engine(self, lane_key: str) -> AudioEngine:
+        return AudioEngine(
+            self.branch_registry.build_runtime_config(lane_key),
+            active_branch_config=self.branch_registry.resolve_runtime_branch_config(lane_key),
+        )
 
     def _safe_stop_engine(self, engine: AudioEngine) -> None:
         try:
@@ -842,7 +900,9 @@ class MainWindow(QWidget):
 
         self._set_status_chip(
             self.speak_status_label,
-            "RU=>EN активно" if self.speak_active and self.pipeline_running else "RU=>EN на паузе",
+            self.speak_branch.definition.active_status_text
+            if self.speak_active and self.pipeline_running
+            else self.speak_branch.definition.paused_status_text,
             "#177245" if self.speak_active and self.pipeline_running else "#7a7a7a",
         )
         self._set_button_style(
@@ -853,7 +913,9 @@ class MainWindow(QWidget):
 
         self._set_status_chip(
             self.listen_status_label,
-            "EN=>RU активно" if self.listen_active and self.pipeline_running else "EN=>RU на паузе",
+            self.listen_branch.definition.active_status_text
+            if self.listen_active and self.pipeline_running
+            else self.listen_branch.definition.paused_status_text,
             "#177245" if self.listen_active and self.pipeline_running else "#7a7a7a",
         )
         self._set_button_style(
@@ -911,12 +973,15 @@ class MainWindow(QWidget):
         if not stripped_message:
             return
 
-        if stripped_message.startswith("[SPEAK] "):
-            self.speak_log_output.append(stripped_message[len("[SPEAK] "):])
+        speak_prefix = f"{self.speak_branch.definition.log_prefix} "
+        listen_prefix = f"{self.listen_branch.definition.log_prefix} "
+
+        if stripped_message.startswith(speak_prefix):
+            self.speak_log_output.append(stripped_message[len(speak_prefix):])
             return
 
-        if stripped_message.startswith("[LISTEN] "):
-            self.listen_log_output.append(stripped_message[len("[LISTEN] "):])
+        if stripped_message.startswith(listen_prefix):
+            self.listen_log_output.append(stripped_message[len(listen_prefix):])
             return
 
         self.speak_log_output.append(stripped_message)
@@ -924,12 +989,15 @@ class MainWindow(QWidget):
 
     def _append_error_to_ui(self, message: str) -> None:
         stripped_message = message.strip()
-        if stripped_message.startswith("[SPEAK] "):
-            self.speak_log_output.append(f"ОШИБКА: {stripped_message[len('[SPEAK] '):]}")
+        speak_prefix = f"{self.speak_branch.definition.log_prefix} "
+        listen_prefix = f"{self.listen_branch.definition.log_prefix} "
+
+        if stripped_message.startswith(speak_prefix):
+            self.speak_log_output.append(f"ОШИБКА: {stripped_message[len(speak_prefix):]}")
             return
 
-        if stripped_message.startswith("[LISTEN] "):
-            self.listen_log_output.append(f"ОШИБКА: {stripped_message[len('[LISTEN] '):]}")
+        if stripped_message.startswith(listen_prefix):
+            self.listen_log_output.append(f"ОШИБКА: {stripped_message[len(listen_prefix):]}")
             return
 
         self.speak_log_output.append(f"ОШИБКА: {stripped_message}")
@@ -954,6 +1022,36 @@ class MainWindow(QWidget):
 
     def _clear_listen_logs(self) -> None:
         self.listen_log_output.clear()
+
+    def refresh_backend_statuses(self) -> None:
+        if not self.backend_manager:
+            return
+        statuses = {
+            status.backend_id: status
+            for status in self.backend_manager.get_status_snapshot()
+        }
+        self._apply_backend_status(self.en_backend_group, statuses.get(LISTEN_LANE_DEFINITION.backend_id))
+        self._apply_backend_status(self.ru_backend_group, statuses.get(SPEAK_LANE_DEFINITION.backend_id))
+
+    def _apply_backend_status(self, group: dict, status) -> None:
+        if status is None:
+            return
+
+        color = {
+            "ready": "#177245",
+            "starting": "#8b6b11",
+            "checking": "#5a5a5a",
+            "stopped": "#7a7a7a",
+            "error": "#7d1f1f",
+        }.get(status.state, "#5a5a5a")
+
+        group["status_label"].setText(status.state)
+        group["status_label"].setStyleSheet(
+            "QLabel { "
+            f"background: {color}; color: white; border-radius: 8px; "
+            "padding: 6px 10px; font-weight: 600; }"
+        )
+        group["detail_label"].setText(status.detail)
 
     def closeEvent(self, event) -> None:
         if self.pipeline_running:

@@ -4,24 +4,25 @@ import threading
 import queue
 import re
 import time
+from difflib import SequenceMatcher
 from typing import Optional, Callable
 
 import numpy as np
 
-from core.audio_session import AudioSession, AudioSessionConfig
-from core.chunk_processor import (
+from core.audio.audio_session import AudioSession, AudioSessionConfig
+from core.audio.chunk_processor import (
     ChunkProcessor,
     ChunkProcessorConfig,
     ProcessingMode,
 )
-from core.audio_service import (
+from core.audio.audio_service import (
     log_audio_routing_snapshot,
     move_app_playback_to_sink,
     move_app_recording_to_source,
     snapshot_sink_input_ids,
     snapshot_source_output_ids,
 )
-from core.app_config import AppConfig, DEFAULT_CONFIG, TranslationBranchConfig, get_primary_branch_config
+from core.config.app_config import AppConfig, DEFAULT_CONFIG, TranslationBranchConfig, get_default_branch_config
 from core.sst.confirm_stt_factory import create_confirm_stt_service
 from core.sst.confirm_stt_service import ConfirmSTTService
 from core.sst.realtime_stt_factory import create_realtime_stt_service
@@ -46,13 +47,18 @@ class AudioEngine:
         "welcome to the american league of legends",
     })
 
-    def __init__(self, app_config: AppConfig | None = None):
+    def __init__(
+        self,
+        app_config: AppConfig | None = None,
+        active_branch_config: TranslationBranchConfig | None = None,
+    ):
         self.session: Optional[AudioSession] = None
         self.worker_thread: Optional[threading.Thread] = None
         self.phrase_worker_thread: Optional[threading.Thread] = None
         self.final_worker_thread: Optional[threading.Thread] = None
         self.running = False
         self.app_config = app_config or DEFAULT_CONFIG
+        self.active_branch_config = active_branch_config or get_default_branch_config(self.app_config)
 
         self.on_log: Optional[Callable[[str], None]] = None
         self.on_error: Optional[Callable[[str], None]] = None
@@ -87,6 +93,9 @@ class AudioEngine:
 
         self.final_text_queue: queue.Queue[str] = queue.Queue(maxsize=32)
         self.low_latency_text_queue: queue.Queue[tuple[str, bool, int]] = queue.Queue(maxsize=32)
+        self.tts_text_queue: queue.Queue[tuple[str, int]] = queue.Queue(maxsize=64)
+        self.tts_worker_thread: Optional[threading.Thread] = None
+        self._tts_stop_event = threading.Event()
         self._pending_final_text: str = ""
         self._pending_final_updated_at: float = 0.0
         self._pending_final_is_partial: bool = False
@@ -112,6 +121,14 @@ class AudioEngine:
         self._low_latency_last_queued_text = ""
         self._low_latency_partial_queued = False
         self._low_latency_deferred_partial_text = ""
+        self._ru_to_en_last_emitted_at: float = 0.0
+        self._ru_to_en_emitted_phrase_norms: set[str] = set()
+        self._ru_to_en_emitted_phrases: list[str] = []
+        self._ru_to_en_pending_phrase_text: str = ""
+        self._ru_to_en_pending_phrase_norm: str = ""
+        self._ru_to_en_pending_phrase_seen_count: int = 0
+        self._ru_to_en_pending_phrase_first_seen_at: float = 0.0
+        self._ru_to_en_pending_phrase_last_seen_at: float = 0.0
         self._translation_paused = False
         self._last_input_level = 0.0
 
@@ -161,6 +178,7 @@ class AudioEngine:
         self._last_stt_activity_at = 0.0
         self._clear_final_text_queue()
         self._clear_low_latency_queue()
+        self._clear_tts_text_queue()
         self._clear_pending_final()
         self._clear_partial_state()
         self.sentence_segmenter = None
@@ -222,6 +240,13 @@ class AudioEngine:
         self._log("Realtime STT connected")
 
         self.running = True
+        self._tts_stop_event.clear()
+        self.tts_worker_thread = threading.Thread(
+            target=self._tts_worker_loop,
+            daemon=True,
+            name="tts-worker-loop",
+        )
+        self.tts_worker_thread.start()
 
         sink_input_ids_before = snapshot_sink_input_ids()
         source_output_ids_before = snapshot_source_output_ids()
@@ -291,6 +316,7 @@ class AudioEngine:
         worker_thread = self.worker_thread
         phrase_worker_thread = self.phrase_worker_thread
         final_worker_thread = self.final_worker_thread
+        tts_worker_thread = self.tts_worker_thread
         session = self.session
         realtime_stt = self.realtime_stt
 
@@ -301,6 +327,8 @@ class AudioEngine:
         self.realtime_stt = None
         self.sentence_segmenter = None
         self.confirm_stt_service = None
+        self.tts_worker_thread = None
+        self._tts_stop_event.set()
 
         if realtime_stt is not None:
             try:
@@ -320,6 +348,9 @@ class AudioEngine:
         if final_worker_thread and final_worker_thread.is_alive():
             final_worker_thread.join(timeout=2.0)
 
+        if tts_worker_thread and tts_worker_thread.is_alive():
+            tts_worker_thread.join(timeout=2.0)
+
         self.translation_service = None
         self.tts_service = None
 
@@ -331,6 +362,7 @@ class AudioEngine:
         self._last_stt_activity_at = 0.0
         self._clear_final_text_queue()
         self._clear_low_latency_queue()
+        self._clear_tts_text_queue()
         self._clear_pending_final()
         self._clear_partial_state()
 
@@ -379,6 +411,7 @@ class AudioEngine:
 
         self._clear_final_text_queue()
         self._clear_low_latency_queue()
+        self._clear_tts_text_queue()
         self._clear_pending_final()
         self._clear_partial_state()
         self._reset_output_audio_queue()
@@ -586,8 +619,14 @@ class AudioEngine:
                 if not self.running:
                     break
 
-                text, is_final, generation = self._collapse_low_latency_queue(item)
-                self._process_low_latency_text(text, is_final, generation)
+                # For RU=>EN we enqueue multiple ordered phrase chunks.
+                # Collapsing the queue would drop earlier chunks and cause "missing tail" speech.
+                if self._get_active_branch_config().translation_direction == "ru_to_en":
+                    text, is_final, generation = item
+                    self._process_low_latency_text(text, is_final, generation)
+                else:
+                    text, is_final, generation = self._collapse_low_latency_queue(item)
+                    self._process_low_latency_text(text, is_final, generation)
                 continue
 
             try:
@@ -673,33 +712,95 @@ class AudioEngine:
         self.last_translated_text = translated_text
         self.last_translated_at = time.monotonic()
         self._log(f"TRANSLATED: {translated_text}")
+        self._enqueue_tts_text(translated_text)
 
-        tts_service = self.tts_service
-        if tts_service is None:
-            self._log("TTS skipped: service is unavailable")
+    def _enqueue_tts_text(self, text: str) -> None:
+        if not self.running or self._translation_paused:
             return
-
-        tts_started_at = time.perf_counter()
+        text = self._normalize_text(text)
+        if not text:
+            return
         try:
-            tts_audio = tts_service.synthesize(
-                translated_text,
-                target_samplerate=self.current_samplerate,
+            self.tts_text_queue.put_nowait((text, self.current_samplerate))
+        except queue.Full:
+            self._handle_error("TTS text queue is full, dropping chunk")
+
+    def _tts_worker_loop(self) -> None:
+        while not self._tts_stop_event.is_set():
+            if not self.running:
+                break
+            try:
+                text, samplerate = self.tts_text_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+
+            if not self.running or self._translation_paused:
+                continue
+
+            text = self._collect_adjacent_tts_text(text)
+            if not text:
+                continue
+
+            tts_service = self.tts_service
+            if tts_service is None:
+                continue
+
+            tts_started_at = time.perf_counter()
+            try:
+                tts_audio = tts_service.synthesize(
+                    text,
+                    target_samplerate=samplerate,
+                )
+            except Exception as error:
+                self._handle_error(f"TTS error: {error}")
+                continue
+
+            tts_elapsed = time.perf_counter() - tts_started_at
+            self._log(f"TTS time: {tts_elapsed:.3f} sec")
+
+            duration = (
+                tts_audio.shape[0] / float(self.current_samplerate)
+                if tts_audio.size > 0
+                else 0.0
             )
-        except Exception as error:
-            self._handle_error(f"TTS error: {error}")
-            return
+            self._log(f"TTS audio ready: {duration:.2f} sec")
+            self._enqueue_tts_audio(tts_audio)
 
-        tts_elapsed = time.perf_counter() - tts_started_at
-        self._log(f"TTS time: {tts_elapsed:.3f} sec")
+    def _collect_adjacent_tts_text(self, first_text: str) -> str:
+        merged_parts = [self._normalize_text(first_text)]
+        if not merged_parts[0]:
+            return ""
 
-        duration = (
-            tts_audio.shape[0] / float(self.current_samplerate)
-            if tts_audio.size > 0
-            else 0.0
-        )
-        self._log(f"TTS audio ready: {duration:.2f} sec")
+        started_at = time.monotonic()
+        max_wait_sec = 0.06
+        max_parts = 3
+        max_chars = 160
 
-        self._enqueue_tts_audio(tts_audio)
+        while len(merged_parts) < max_parts and (time.monotonic() - started_at) < max_wait_sec:
+            timeout = max(0.0, max_wait_sec - (time.monotonic() - started_at))
+            try:
+                next_text, _samplerate = self.tts_text_queue.get(timeout=timeout)
+            except queue.Empty:
+                break
+
+            next_text = self._normalize_text(next_text)
+            if not next_text:
+                continue
+
+            candidate = " ".join(merged_parts + [next_text]).strip()
+            if len(candidate) > max_chars:
+                try:
+                    self.tts_text_queue.put_nowait((next_text, self.current_samplerate))
+                except queue.Full:
+                    self._handle_error("TTS text queue is full, dropping deferred chunk")
+                break
+
+            merged_parts.append(next_text)
+
+        merged_text = " ".join(part for part in merged_parts if part).strip()
+        if len(merged_parts) > 1:
+            self._log(f"TTS merged batch: {len(merged_parts)} chunks")
+        return merged_text
 
     def _should_output_processed_audio(self) -> bool:
         if self.processor is None:
@@ -718,6 +819,10 @@ class AudioEngine:
         if session is None or not self.running or session.stopping:
             return
 
+        if audio.size == 0:
+            return
+
+        audio = self._trim_tts_audio_silence(audio)
         if audio.size == 0:
             return
 
@@ -751,6 +856,26 @@ class AudioEngine:
                 continue
 
             offset += self.current_blocksize
+
+    def _trim_tts_audio_silence(self, audio: np.ndarray) -> np.ndarray:
+        if audio.size == 0:
+            return audio
+
+        mono = audio[:, 0] if audio.ndim == 2 else audio
+        if mono.size == 0:
+            return audio
+
+        threshold = 0.0035
+        active_indices = np.flatnonzero(np.abs(mono) >= threshold)
+        if active_indices.size == 0:
+            return audio
+
+        pad_frames = int(0.03 * self.current_samplerate)
+        start = max(0, int(active_indices[0]) - pad_frames)
+        end = min(int(mono.shape[0]), int(active_indices[-1]) + pad_frames + 1)
+        if audio.ndim == 2:
+            return audio[start:end, :]
+        return audio[start:end]
 
     def _trim_output_queue_if_needed(self, session: AudioSession) -> None:
         if self._uses_low_latency_direct_pipeline():
@@ -801,6 +926,13 @@ class AudioEngine:
             except queue.Empty:
                 break
 
+    def _clear_tts_text_queue(self) -> None:
+        while not self.tts_text_queue.empty():
+            try:
+                self.tts_text_queue.get_nowait()
+            except queue.Empty:
+                break
+
     def _clear_pending_final(self) -> None:
         with self._pending_final_lock:
             self._pending_final_text = ""
@@ -823,6 +955,10 @@ class AudioEngine:
         self._low_latency_emitted_text = ""
         self._low_latency_last_queued_text = ""
         self._low_latency_partial_queued = False
+        self._ru_to_en_last_emitted_at = 0.0
+        self._ru_to_en_emitted_phrase_norms = set()
+        self._ru_to_en_emitted_phrases = []
+        self._reset_ru_to_en_pending_phrase()
         with self._utterance_audio_lock:
             self._utterance_audio_chunks = []
             self._utterance_audio_total_frames = 0
@@ -1112,11 +1248,7 @@ class AudioEngine:
         branch_config: TranslationBranchConfig,
     ) -> tuple[TranslationService, bool]:
         translation_direction = self._resolve_translation_direction(branch_config)
-        translation_device = (
-            "cpu"
-            if translation_direction == TranslationDirection.RU_TO_EN
-            else None
-        )
+        translation_device = None
         key = (
             translation_direction.value,
             bool(branch_config.enabled),
@@ -1212,6 +1344,8 @@ class AudioEngine:
     def _uses_low_latency_direct_pipeline(self) -> bool:
         backend = (self.app_config.stt.backend or "nim").strip().lower()
         if backend == "faster_whisper":
+            if not self.app_config.stt.partial_emit_enabled:
+                return False
             return True
         if backend == "whisper_cpp":
             branch_config = self._get_active_branch_config()
@@ -1226,6 +1360,43 @@ class AudioEngine:
     def _handle_low_latency_partial(self, text: str) -> None:
         normalized = self._normalize_text(text)
         if not normalized:
+            return
+
+        branch_config = self._get_active_branch_config()
+        if branch_config.translation_direction == "ru_to_en":
+            now = time.monotonic()
+
+            incremental = self._extract_incremental_text(self._low_latency_emitted_text, normalized)
+            incremental = self._normalize_text(incremental)
+            if not incremental:
+                self._expire_ru_to_en_pending_phrase(now)
+                return
+
+            completed_phrases, _trailing_fragment = self._split_ru_to_en_phrases(incremental)
+            if not completed_phrases:
+                self._expire_ru_to_en_pending_phrase(now)
+                return
+
+            for phrase in completed_phrases:
+                candidate = self._normalize_text(phrase)
+                if not self._should_emit_ru_to_en_partial_phrase(candidate):
+                    continue
+                if not self._mark_ru_to_en_partial_phrase_seen(candidate, now):
+                    return
+
+                candidate_norm = self._normalize_compare_text(candidate)
+                self._ru_to_en_last_emitted_at = now
+                self._ru_to_en_emitted_phrase_norms.add(candidate_norm)
+                self._low_latency_generation += 1
+                self._low_latency_last_queued_text = candidate
+                self._log(f"LOWLAT sentence queued: {candidate}")
+                self._enqueue_low_latency_text(
+                    candidate,
+                    is_final=False,
+                    generation=self._low_latency_generation,
+                )
+                self._reset_ru_to_en_pending_phrase()
+                return
             return
 
         if self._normalize_compare_text(normalized) == self._normalize_compare_text(self._low_latency_last_partial_text):
@@ -1285,8 +1456,15 @@ class AudioEngine:
         if not final_text:
             return
 
+        branch_config = self._get_active_branch_config()
         if self._should_skip_known_low_latency_source_hallucination(final_text):
             self._log(f"LOWLAT final skipped: known hallucination ({final_text})")
+            return
+
+        if branch_config.translation_direction == "ru_to_en":
+            # RU=>EN: flush remaining tail of the utterance.
+            self._reset_ru_to_en_pending_phrase()
+            self._enqueue_low_latency_sentence_stream_segments(final_text, is_final=True, force=True)
             return
 
         incremental = self._extract_incremental_text(self._get_low_latency_incremental_anchor(), final_text)
@@ -1313,6 +1491,108 @@ class AudioEngine:
         self._log(f"LOWLAT final queued: {incremental}")
         self._enqueue_low_latency_text(incremental, is_final=True, generation=self._low_latency_generation)
 
+    def _enqueue_low_latency_sentence_stream_segments(self, text: str, *, is_final: bool, force: bool = False) -> None:
+        text = self._normalize_text(text)
+        if not text:
+            return
+        branch_config = self._get_active_branch_config()
+        if branch_config.translation_direction == "ru_to_en":
+            completed_sentences, trailing_fragment = self._split_ru_to_en_phrases(text)
+            phrase_min_words = 2
+        else:
+            completed_sentences, trailing_fragment = self._split_sentences(text)
+            sentence_min_words = self._get_sentence_stream_min_words()
+
+        emitted_any = False
+        if branch_config.translation_direction == "ru_to_en":
+            # RU=>EN: faster-whisper partials are unstable and can rewrite earlier text.
+            # Using a simple index causes us to "miss" newly-appearing phrases.
+            # Emit any phrase we haven't emitted yet (dedup by normalized phrase).
+            for sentence in completed_sentences:
+                normalized_sentence = self._prepare_ru_to_en_phrase_for_queue(sentence)
+                if len(normalized_sentence.split()) < phrase_min_words:
+                    continue
+                phrase_norm = self._normalize_compare_text(normalized_sentence)
+                if (
+                    not phrase_norm
+                    or phrase_norm in self._ru_to_en_emitted_phrase_norms
+                    or self._should_skip_ru_to_en_overlap_phrase(normalized_sentence)
+                ):
+                    continue
+
+                now = time.monotonic()
+                if not force and (now - self._ru_to_en_last_emitted_at) < 0.12:
+                    break
+                self._ru_to_en_last_emitted_at = now
+                self._remember_ru_to_en_emitted_phrase(normalized_sentence)
+
+                self._low_latency_generation += 1
+                self._low_latency_last_queued_text = normalized_sentence
+                self._log(f"LOWLAT sentence queued: {normalized_sentence}")
+                self._enqueue_low_latency_text(
+                    normalized_sentence,
+                    is_final=False,
+                    generation=self._low_latency_generation,
+                )
+                emitted_any = True
+        else:
+            start_index = min(self._emitted_complete_sentence_count, len(completed_sentences))
+            for sentence in completed_sentences[start_index:]:
+                normalized_sentence = self._normalize_text(sentence)
+                self._emitted_complete_sentence_count += 1
+                if len(normalized_sentence.split()) < sentence_min_words:
+                    continue
+
+                self._low_latency_generation += 1
+                self._low_latency_last_queued_text = normalized_sentence
+                self._log(f"LOWLAT sentence queued: {normalized_sentence}")
+                self._enqueue_low_latency_text(
+                    normalized_sentence,
+                    is_final=False,
+                    generation=self._low_latency_generation,
+                )
+                emitted_any = True
+
+        if is_final:
+            trailing_fragment = self._prepare_ru_to_en_phrase_for_queue(trailing_fragment)
+            if branch_config.translation_direction == "ru_to_en":
+                if trailing_fragment and len(trailing_fragment.split()) >= phrase_min_words:
+                    trailing_norm = self._normalize_compare_text(trailing_fragment)
+                    last_queued_norm = self._normalize_compare_text(self._low_latency_last_queued_text)
+                    if (
+                        trailing_norm
+                        and trailing_norm != last_queued_norm
+                        and trailing_norm not in self._ru_to_en_emitted_phrase_norms
+                        and not self._should_skip_ru_to_en_overlap_phrase(trailing_fragment)
+                    ):
+                        self._low_latency_generation += 1
+                        self._low_latency_last_queued_text = trailing_fragment
+                        self._ru_to_en_last_emitted_at = time.monotonic()
+                        self._remember_ru_to_en_emitted_phrase(trailing_fragment)
+                        self._log(f"LOWLAT final tail queued: {trailing_fragment}")
+                        self._enqueue_low_latency_text(
+                            trailing_fragment,
+                            is_final=True,
+                            generation=self._low_latency_generation,
+                        )
+                        emitted_any = True
+            elif trailing_fragment and len(trailing_fragment.split()) >= sentence_min_words:
+                trailing_norm = self._normalize_compare_text(trailing_fragment)
+                last_queued_norm = self._normalize_compare_text(self._low_latency_last_queued_text)
+                if trailing_norm and trailing_norm != last_queued_norm:
+                    self._low_latency_generation += 1
+                    self._low_latency_last_queued_text = trailing_fragment
+                    self._log(f"LOWLAT final tail queued: {trailing_fragment}")
+                    self._enqueue_low_latency_text(
+                        trailing_fragment,
+                        is_final=True,
+                        generation=self._low_latency_generation,
+                    )
+                    emitted_any = True
+
+        if not emitted_any:
+            self._log(f"LOWLAT sentence stream: no new segments (final={is_final})")
+
     def _enqueue_low_latency_text(self, text: str, is_final: bool, generation: int) -> None:
         try:
             self.low_latency_text_queue.put_nowait((text, is_final, generation))
@@ -1337,7 +1617,11 @@ class AudioEngine:
         return latest
 
     def _process_low_latency_text(self, text: str, is_final: bool, generation: int) -> None:
-        if generation < self._low_latency_generation:
+        branch_config = self._get_active_branch_config()
+        if (
+            branch_config.translation_direction != "ru_to_en"
+            and generation < self._low_latency_generation
+        ):
             self._log("LOWLAT skipped: stale chunk")
             return
 
@@ -1382,7 +1666,7 @@ class AudioEngine:
         if completed_sentences:
             return self._normalize_text(completed_sentences[0])
 
-        if self._low_latency_partial_repeat_count >= 2 and len(normalized.split()) >= 6:
+        if self._low_latency_partial_repeat_count >= 3 and len(normalized.split()) >= 8:
             return normalized
 
         return ""
@@ -1395,7 +1679,7 @@ class AudioEngine:
         backend = (self.app_config.stt.backend or "nim").strip().lower()
         if backend == "whisper_cpp":
             return max(4, self.app_config.stt.partial_min_words)
-        return max(5, self.app_config.stt.partial_min_words)
+        return max(6, self.app_config.stt.partial_min_words)
 
     def _select_low_latency_followup_partial_candidate(self, normalized: str) -> str:
         return self._select_low_latency_followup_partial_candidate_from_anchor(
@@ -1679,6 +1963,317 @@ class AudioEngine:
             trailing_fragment = text
 
         return completed_sentences, trailing_fragment
+
+    @staticmethod
+    def _split_ru_to_en_phrases(text: str) -> tuple[list[str], str]:
+        text = AudioEngine._normalize_text(text)
+        if not text:
+            return [], ""
+
+        phrase_matches = list(re.finditer(r"[^.!?,;:]+[.!?,;:]", text))
+        completed_phrases = [
+            match.group(0).strip()
+            for match in phrase_matches
+            if match.group(0).strip()
+        ]
+
+        trailing_fragment = ""
+        if phrase_matches:
+            trailing_fragment = text[phrase_matches[-1].end():].strip()
+        else:
+            trailing_fragment = text
+
+        return completed_phrases, trailing_fragment
+
+    def _should_emit_ru_to_en_partial_phrase(self, phrase: str) -> bool:
+        phrase = self._normalize_text(phrase)
+        if not phrase:
+            return False
+
+        normalized = self._normalize_compare_text(phrase)
+        if not normalized or normalized in self._ru_to_en_emitted_phrase_norms:
+            return False
+
+        words = normalized.split()
+        if len(words) < 2:
+            return False
+
+        punctuation = phrase[-1] if phrase and phrase[-1] in ".!?,;:" else ""
+        if punctuation in {",", ";", ":"} and len(words) < 3:
+            return False
+
+        allowed_short_phrases = {
+            "всем привет",
+            "добрый день",
+            "добрый вечер",
+            "доброе утро",
+            "как дела",
+        }
+        if len(words) == 2 and punctuation not in {"!", "?"} and normalized not in allowed_short_phrases:
+            return False
+
+        weak_tail_tokens = {
+            "а",
+            "без",
+            "в",
+            "во",
+            "где",
+            "да",
+            "для",
+            "до",
+            "если",
+            "и",
+            "из",
+            "или",
+            "как",
+            "когда",
+            "ко",
+            "к",
+            "мне",
+            "меня",
+            "мой",
+            "моя",
+            "мои",
+            "моё",
+            "на",
+            "но",
+            "о",
+            "об",
+            "от",
+            "по",
+            "под",
+            "при",
+            "про",
+            "с",
+            "со",
+            "то",
+            "у",
+            "что",
+            "чтобы",
+            "эта",
+            "это",
+            "этот",
+            "эти",
+            "я",
+        }
+        if words[-1] in weak_tail_tokens:
+            return False
+
+        if normalized in {"меня зовут", "я из", "я язык"}:
+            return False
+
+        if normalized.startswith("меня зовут") and len(words) < 3:
+            return False
+
+        if normalized.startswith("я из") and len(words) < 3:
+            return False
+
+        if re.fullmatch(r"мне\s+\d{1,3}", normalized):
+            return False
+
+        if len(words) <= 3 and re.search(r"\b\d{1,3}\b", normalized) and "лет" not in words and "год" not in words:
+            return False
+
+        return True
+
+    def _mark_ru_to_en_partial_phrase_seen(self, phrase: str, now: float) -> bool:
+        phrase = self._normalize_text(phrase)
+        phrase_norm = self._normalize_compare_text(phrase)
+        if not phrase_norm:
+            return False
+
+        stale_after_sec = 0.55
+        if (
+            phrase_norm != self._ru_to_en_pending_phrase_norm
+            or (now - self._ru_to_en_pending_phrase_last_seen_at) > stale_after_sec
+        ):
+            self._ru_to_en_pending_phrase_text = phrase
+            self._ru_to_en_pending_phrase_norm = phrase_norm
+            self._ru_to_en_pending_phrase_seen_count = 1
+            self._ru_to_en_pending_phrase_first_seen_at = now
+        else:
+            self._ru_to_en_pending_phrase_text = phrase
+            self._ru_to_en_pending_phrase_seen_count += 1
+
+        self._ru_to_en_pending_phrase_last_seen_at = now
+        stable_for = now - self._ru_to_en_pending_phrase_first_seen_at
+        return (
+            self._ru_to_en_pending_phrase_seen_count >= 2
+            or stable_for >= self._get_ru_to_en_partial_phrase_stability_sec(phrase)
+        )
+
+    def _get_ru_to_en_partial_phrase_stability_sec(self, phrase: str) -> float:
+        normalized = self._normalize_compare_text(phrase)
+        punctuation = phrase[-1] if phrase and phrase[-1] in ".!?,;:" else ""
+        if normalized in {
+            "всем привет",
+            "добрый день",
+            "добрый вечер",
+            "доброе утро",
+        } and punctuation in {"!", ","}:
+            return 0.0
+        if punctuation in {"!", "?"}:
+            return 0.18
+        if punctuation in {",", ";", ":"}:
+            return 0.28
+        return 0.24
+
+    def _prepare_ru_to_en_phrase_for_queue(self, phrase: str) -> str:
+        phrase = self._normalize_text(phrase)
+        if not phrase:
+            return ""
+
+        phrase_norm = self._normalize_compare_text(phrase)
+        if not phrase_norm:
+            return ""
+        comparable_phrase_norm = self._normalize_ru_to_en_dedup_phrase(phrase)
+        phrase_words = phrase.split()
+        phrase_norm_words = phrase_norm.split()
+
+        for emitted_phrase in reversed(self._ru_to_en_emitted_phrases[-8:]):
+            emitted_norm = self._normalize_compare_text(emitted_phrase)
+            if not emitted_norm:
+                continue
+            comparable_emitted_norm = self._normalize_ru_to_en_dedup_phrase(emitted_phrase)
+            emitted_norm_words = emitted_norm.split()
+
+            if self._is_ru_to_en_near_duplicate_phrase(comparable_phrase_norm, comparable_emitted_norm):
+                return ""
+
+            common_prefix_len = 0
+            for emitted_word, phrase_word in zip(emitted_norm_words, phrase_norm_words):
+                if emitted_word != phrase_word:
+                    break
+                common_prefix_len += 1
+
+            if 0 < common_prefix_len < len(phrase_norm_words):
+                remaining_raw_words = phrase_words[common_prefix_len:]
+                if remaining_raw_words:
+                    return self._normalize_text(" ".join(remaining_raw_words))
+
+            incremental = self._normalize_text(
+                self._extract_incremental_text(emitted_phrase, phrase)
+            )
+            incremental_norm = self._normalize_compare_text(incremental)
+            if incremental_norm and incremental_norm != phrase_norm:
+                return incremental
+
+            if phrase_norm == emitted_norm:
+                return ""
+
+            if len(comparable_phrase_norm.split()) <= 6 and f" {comparable_phrase_norm} " in f" {comparable_emitted_norm} ":
+                return ""
+
+        return phrase
+
+    def _remember_ru_to_en_emitted_phrase(self, phrase: str) -> None:
+        phrase = self._normalize_text(phrase)
+        phrase_norm = self._normalize_compare_text(phrase)
+        if not phrase_norm:
+            return
+
+        self._ru_to_en_emitted_phrase_norms.add(phrase_norm)
+        self._ru_to_en_emitted_phrases.append(phrase)
+        if len(self._ru_to_en_emitted_phrases) > 24:
+            self._ru_to_en_emitted_phrases = self._ru_to_en_emitted_phrases[-24:]
+
+    @staticmethod
+    def _is_ru_to_en_near_duplicate_phrase(phrase_norm: str, emitted_norm: str) -> bool:
+        if not phrase_norm or not emitted_norm or phrase_norm == emitted_norm:
+            return phrase_norm == emitted_norm
+
+        phrase_words = phrase_norm.split()
+        emitted_words = emitted_norm.split()
+        if len(phrase_words) < 4 or len(emitted_words) < 4:
+            return False
+
+        common_prefix_len = 0
+        for left, right in zip(phrase_words, emitted_words):
+            if left != right:
+                break
+            common_prefix_len += 1
+
+        if common_prefix_len < 4:
+            return False
+
+        if abs(len(phrase_words) - len(emitted_words)) > 1:
+            return False
+
+        similarity = SequenceMatcher(None, phrase_norm, emitted_norm).ratio()
+        return similarity >= 0.84
+
+    def _should_skip_ru_to_en_overlap_phrase(self, phrase: str) -> bool:
+        phrase_norm = self._normalize_compare_text(phrase)
+        if not phrase_norm:
+            return True
+        comparable_phrase_norm = self._normalize_ru_to_en_dedup_phrase(phrase)
+
+        emitted_norm = self._normalize_compare_text(self._low_latency_emitted_text)
+        if not emitted_norm:
+            return False
+        comparable_emitted_norm = self._normalize_ru_to_en_dedup_phrase(self._low_latency_emitted_text)
+
+        if comparable_phrase_norm == comparable_emitted_norm:
+            return True
+
+        phrase_words = comparable_phrase_norm.split()
+        if len(phrase_words) <= 5 and f" {comparable_phrase_norm} " in f" {comparable_emitted_norm} ":
+            return True
+
+        for emitted_phrase in reversed(self._ru_to_en_emitted_phrases[-8:]):
+            emitted_phrase_norm = self._normalize_ru_to_en_dedup_phrase(emitted_phrase)
+            if (
+                emitted_phrase_norm
+                and (
+                    (len(phrase_words) <= 6 and f" {comparable_phrase_norm} " in f" {emitted_phrase_norm} ")
+                    or self._is_ru_to_en_near_duplicate_phrase(comparable_phrase_norm, emitted_phrase_norm)
+                )
+            ):
+                return True
+
+        emitted_words = comparable_emitted_norm.split()
+        max_overlap = min(len(phrase_words), len(emitted_words), 6)
+        for overlap_len in range(max_overlap, 1, -1):
+            if emitted_words[-overlap_len:] == phrase_words[:overlap_len]:
+                remaining_words = phrase_words[overlap_len:]
+                if not remaining_words or len(remaining_words) <= 2:
+                    return True
+
+        return False
+
+    @staticmethod
+    def _normalize_ru_to_en_dedup_phrase(text: str) -> str:
+        normalized = AudioEngine._normalize_compare_text(text)
+        if not normalized:
+            return ""
+
+        leading_linkers = {
+            "и",
+            "а",
+            "но",
+            "ну",
+            "так",
+            "тогда",
+            "потом",
+        }
+        words = normalized.split()
+        while words and words[0] in leading_linkers:
+            words = words[1:]
+
+        return " ".join(words).strip()
+
+    def _expire_ru_to_en_pending_phrase(self, now: float) -> None:
+        if not self._ru_to_en_pending_phrase_norm:
+            return
+        if (now - self._ru_to_en_pending_phrase_last_seen_at) > 0.55:
+            self._reset_ru_to_en_pending_phrase()
+
+    def _reset_ru_to_en_pending_phrase(self) -> None:
+        self._ru_to_en_pending_phrase_text = ""
+        self._ru_to_en_pending_phrase_norm = ""
+        self._ru_to_en_pending_phrase_seen_count = 0
+        self._ru_to_en_pending_phrase_first_seen_at = 0.0
+        self._ru_to_en_pending_phrase_last_seen_at = 0.0
 
     def _get_sentence_stream_min_words(self) -> int:
         return max(4, self.app_config.stt.partial_min_words)
@@ -1972,7 +2567,7 @@ class AudioEngine:
             self._log(message)
 
     def _get_active_branch_config(self) -> TranslationBranchConfig:
-        return get_primary_branch_config(self.app_config)
+        return self.active_branch_config
 
     def _enqueue_boundary_sentence(self, text: str) -> None:
         text = self._normalize_text(text)
@@ -2083,19 +2678,7 @@ class AudioEngine:
             "FINAL incremental:",
             "FINAL merged:",
             "FINAL skipped:",
-            "PARTIAL promoted:",
-            "PARTIAL sentence queued:",
-            "PARTIAL sentence stream:",
-            "FINAL sentence queued:",
-            "FINAL sentence stream:",
-            "LOWLAT partial queued:",
-            "LOWLAT final queued:",
-            "LOWLAT final skipped:",
-            "LOWLAT skipped:",
-            "Translation time:",
-            "TTS time:",
-            "TTS audio ready:",
-            "TRANSLATED skipped:",
+            # keep low-latency + timing logs visible for tuning latency/debugging
             "Dropped stale TTS audio queue",
         )
         return not message.startswith(noisy_prefixes)

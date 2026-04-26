@@ -15,6 +15,7 @@ from silero_vad import VADIterator, load_silero_vad
 class FasterWhisperRealtimeSTTConfig:
     language: str = "ru"
     sample_rate_hz: int = 16000
+    device: str = "cuda"
     partial_interval_sec: float = 0.35
     min_window_sec: float = 0.9
     max_window_sec: float = 8.0
@@ -37,7 +38,7 @@ class FasterWhisperRealtimeSTTService:
         try:
             self._model = WhisperModel(
                 self.config.whisper_model_size,
-                device="cuda",
+                device=self.config.device,
                 compute_type=self.config.compute_type,
             )
         except Exception as error:
