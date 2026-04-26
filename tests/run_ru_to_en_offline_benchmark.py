@@ -74,7 +74,8 @@ def parse_args() -> argparse.Namespace:
         nargs="?",
         help="Optional path to the benchmark audio file. If omitted, recordings/benchmarks/ru_to_en/source/current_benchmark.wav is used.",
     )
-    parser.add_argument("--pace", action="store_true", help="Feed audio in real time.")
+    parser.add_argument("--pace", dest="pace", action="store_true", help="Feed audio in real time.")
+    parser.add_argument("--no-pace", dest="pace", action="store_false", help="Feed audio as fast as possible.")
     parser.add_argument(
         "--pace-factor",
         type=float,
@@ -101,8 +102,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--warmup",
+        dest="warmup",
         action="store_true",
         help="Prewarm runtime models before the benchmark run.",
+    )
+    parser.add_argument(
+        "--no-warmup",
+        dest="warmup",
+        action="store_false",
+        help="Skip runtime prewarm before the benchmark run.",
     )
     parser.add_argument(
         "--use-cuda-tts",
@@ -115,6 +123,7 @@ def parse_args() -> argparse.Namespace:
         default=str(BENCHMARK_RUNS_DIR),
         help="Directory where run artifacts will be written.",
     )
+    parser.set_defaults(pace=True, warmup=True)
     return parser.parse_args()
 
 
@@ -232,7 +241,7 @@ def start_headless_engine(
     channels: int,
     blocksize: int,
     log_events: list[BenchmarkLogEvent],
-) -> AudioEngine:
+) -> tuple[AudioEngine, float]:
     engine = AudioEngine(config, active_branch_config=active_branch)
     started_at = time.perf_counter()
     log_lock = threading.Lock()
@@ -317,7 +326,7 @@ def start_headless_engine(
     )
     engine.final_worker_thread.start()
 
-    return engine
+    return engine, started_at
 
 
 def stop_headless_engine(engine: AudioEngine) -> None:
@@ -376,9 +385,12 @@ def run_benchmark(args: argparse.Namespace) -> OfflineBenchmarkReport:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    print("benchmark: build runtime config", flush=True)
     runtime_config, active_branch = build_runtime_config(args.use_cuda_tts)
     samplerate = runtime_config.audio.samplerate
+    print("benchmark: pick input", flush=True)
     input_path = pick_input_path(args.input_path)
+    print(f"benchmark: decode audio {input_path}", flush=True)
     audio, samplerate = decode_audio_to_float32_mono(input_path, samplerate)
 
     first_speech_at = find_first_speech_at_sec(
@@ -388,7 +400,8 @@ def run_benchmark(args: argparse.Namespace) -> OfflineBenchmarkReport:
     )
 
     log_events: list[BenchmarkLogEvent] = []
-    engine = start_headless_engine(
+    print("benchmark: start headless engine", flush=True)
+    engine, log_started_at = start_headless_engine(
         runtime_config,
         active_branch,
         samplerate=samplerate,
@@ -398,14 +411,18 @@ def run_benchmark(args: argparse.Namespace) -> OfflineBenchmarkReport:
     )
 
     if args.warmup:
+        print("benchmark: warmup runtime", flush=True)
         engine.prewarm_runtime()
 
     chunk_samples = max(1, int((args.chunk_ms / 1000.0) * samplerate))
+    feed_started_offset_sec: float | None = None
 
     try:
         if engine.realtime_stt is None:
             raise RuntimeError("Realtime STT was not initialized")
 
+        print("benchmark: feed audio", flush=True)
+        feed_started_offset_sec = time.perf_counter() - log_started_at
         for offset in range(0, len(audio), chunk_samples):
             chunk = audio[offset: offset + chunk_samples]
             if chunk.size == 0:
@@ -421,13 +438,17 @@ def run_benchmark(args: argparse.Namespace) -> OfflineBenchmarkReport:
                 pace_factor = max(args.pace_factor, 0.01)
                 time.sleep((args.chunk_ms / 1000.0) / pace_factor)
 
+        print("benchmark: commit + done", flush=True)
         engine.realtime_stt.commit()
         engine.realtime_stt.send_done()
+        print("benchmark: wait flush", flush=True)
         wait_for_pipeline_to_flush(engine)
         time.sleep(0.35)
     finally:
+        print("benchmark: stop headless engine", flush=True)
         stop_headless_engine(engine)
 
+    print("benchmark: summarize", flush=True)
     queued_segments: list[str] = []
     translated_segments: list[str] = []
     final_segments: list[str] = []
@@ -440,6 +461,9 @@ def run_benchmark(args: argparse.Namespace) -> OfflineBenchmarkReport:
     last_translated_at: float | None = None
 
     for event in log_events:
+        adjusted_at_sec = event.at_sec
+        if feed_started_offset_sec is not None:
+            adjusted_at_sec -= feed_started_offset_sec
         message = event.message
 
         queued = extract_payload(message, "LOWLAT sentence queued: ")
@@ -448,21 +472,21 @@ def run_benchmark(args: argparse.Namespace) -> OfflineBenchmarkReport:
         if queued:
             queued_segments.append(queued)
             if first_queue_at is None:
-                first_queue_at = event.at_sec
+                first_queue_at = adjusted_at_sec
             continue
 
         translated = extract_payload(message, "TRANSLATED: ")
         if translated:
             translated_segments.append(translated)
             if first_translate_at is None:
-                first_translate_at = event.at_sec
+                first_translate_at = adjusted_at_sec
             if last_translated_at is not None:
-                gap = event.at_sec - last_translated_at
+                gap = adjusted_at_sec - last_translated_at
                 if gap > args.gap_long_sec:
                     long_translation_gaps.append(
                         f"{gap:.2f}s gap before '{translated}'"
                     )
-            last_translated_at = event.at_sec
+            last_translated_at = adjusted_at_sec
             continue
 
         final_text = extract_payload(message, "FINAL: ")
@@ -473,7 +497,7 @@ def run_benchmark(args: argparse.Namespace) -> OfflineBenchmarkReport:
         tts_duration = extract_tts_duration(message)
         if tts_duration is not None:
             if first_tts_ready_at is None:
-                first_tts_ready_at = event.at_sec
+                first_tts_ready_at = adjusted_at_sec
             if tts_duration > args.tts_long_sec:
                 long_tts_segments.append(f"{tts_duration:.2f}s")
 
