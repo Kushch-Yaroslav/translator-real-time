@@ -41,92 +41,101 @@
 - [core/audio/audio_engine.py](/media/yaroslav/DATA/Мой%20переводчик/core/audio/audio_engine.py)
 - [core/audio/ru_to_en_stream_controller.py](/media/yaroslav/DATA/Мой%20переводчик/core/audio/ru_to_en_stream_controller.py)
 
-## Benchmark
+## Benchmark System (RU→EN)
 
-Benchmark уже создан.
+### 1. Назначение
+Бенчмарк предназначен для автоматизированной проверки качества работы пайплайна перевода `RU => EN` в оффлайн-режиме.
+Он позволяет измерять:
+- **Качество распознавания и перевода:** сравнение финального текста с эталонным (`expected.txt`).
+- **Стабильность:** наличие дубликатов в очередях и финальном тексте.
+- **Задержки (Latency):** время до появления первой речи, первой очереди, первого перевода и готовности TTS.
+- **Производительность:** `realtime_factor` (насколько быстрее/медленнее реального времени идет обработка).
 
-Компоненты:
+Используется как обязательный приемочный тест после любых изменений в логике `AudioEngine`, `StreamController` или сервисах перевода/TTS.
 
-- окно записи benchmark-файла:
-  [core/ui/benchmark_recorder_window.py](/media/yaroslav/DATA/Мой%20переводчик/core/ui/benchmark_recorder_window.py)
-- headless runner:
-  [tests/run_ru_to_en_offline_benchmark.py](/media/yaroslav/DATA/Мой%20переводчик/tests/run_ru_to_en_offline_benchmark.py)
-- benchmark paths:
-  [core/benchmark/paths.py](/media/yaroslav/DATA/Мой%20переводчик/core/benchmark/paths.py)
+### 2. Структура файлов
+```text
+recordings/benchmarks/ru_to_en/
+  source/
+    simple_text/
+      simple_text.wav             # Аудио эталон
+      simple_text.expected.txt    # Текст эталон
+    natural_speech/
+      natural_speech.wav
+      natural_speech.expected.txt
+    pauses_and_hesitation/
+      pauses_and_hesitation.wav
+      pauses_and_hesitation.expected.txt
+    difficult_phrases/
+      difficult_phrases.wav
+      difficult_phrases.expected.txt
+    noisy_or_unclear/
+      noisy_or_unclear.wav
+      noisy_or_unclear.expected.txt
 
-Запуск UI:
-
-```bash
-python main.py
+  runs/
+    run_YYYY-MM-DD_HH-MM-SS/      # Папка конкретного прогона
+      summary.json                # Общий отчет по всем тестам в прогоне
+      comparison.json             # Сравнение с предыдущим прогоном
+      <category>/
+        <file>.json               # Детальные метрики файла
+        <file>.log                # Лог событий обработки
 ```
+- **source**: неизменяемые эталонные данные.
+- **runs**: результаты запусков. Система хранит только **3 последних прогона**, старые удаляются автоматически.
 
-Запуск benchmark-runner:
+### 3. Категории
+- **simple_text** — "Простой текст": короткие, понятные фразы без сложных пауз.
+- **natural_speech** — "Естественная речь": обычный темп, нормальная разговорная речь.
+- **pauses_and_hesitation** — "Паузы и запинки": речь с остановками, повторами, неидеальным темпом.
+- **difficult_phrases** — "Сложные фразы": длинные предложения, термины, числа, вкрапления английских слов.
+- **noisy_or_unclear** — "Шумная / нечеткая речь": плохая запись, фоновый шум, нечеткая дикция.
 
-```bash
-./.venv/bin/python tests/run_ru_to_en_offline_benchmark.py
-```
+### 4. Как использовать
+1. **Запись:** Открыть `Benchmark Recorder`, выбрать категорию, ввести `Expected Text`, нажать `Record`.
+2. **Сохранение:** После остановки файл сохранится автоматически с именем категории в нужную папку `source`.
+3. **Запуск:**
+   - В UI: кнопки "Запустить текущий" (выбранная категория) или "Запустить все".
+   - В терминале: `python tests/run_ru_to_en_offline_benchmark.py --all`.
 
-## Benchmark Audio
+### 5. Поведение системы
+- **Изоляция:** `source` файлы никогда не меняются при прогонах бенчмарка.
+- **Ротация:** При создании 4-го прогона, самый старый (1-й) удаляется целиком.
+- **Сравнение:** `comparison.json` создается автоматически, если есть хотя бы один предыдущий прогон.
 
-Эталонный benchmark-файл один:
+### 6. Параллельный запуск
+- Прогон идет в **offline режиме**: аудио подается напрямую в pipeline (без микрофона и виртуальных устройств).
+- Используется параллельная обработка файлов для ускорения тестов.
+- **Concurrency**: по умолчанию 2 (настраивается в раннере).
+- Логи и результаты каждого файла полностью изолированы.
 
-- [current_benchmark.wav](/media/yaroslav/DATA/Мой%20переводчик/recordings/benchmarks/ru_to_en/source/current_benchmark.wav)
+### 7. Метрики
+Основные технические метрики:
+- `queue_start_delay_sec`: задержка до первой постановки в очередь.
+- `translate_start_delay_sec`: задержка до получения первого перевода.
+- `tts_ready_start_delay_sec`: задержка до готовности первого TTS-чанка.
+- `total_pipeline_time_sec`: общее время обработки файла.
+- `realtime_factor`: отношение времени обработки к длительности аудио (меньше = лучше, < 1.0 — быстрее реального времени).
+- `duplicate_queued_count` / `duplicate_translated_count`: количество повторов.
+- `long_translation_gaps_count`: количество аномальных пауз между фразами.
+- `word_count_diff`: разница в количестве слов между финальным текстом и эталоном.
 
-Файл перезаписывается через benchmark recorder окно.
+### 8. Сравнение прогонов (Comparison)
+Файл `comparison.json` содержит анализ изменений:
+- Каждая метрика получает статус: `improved` (лучше), `worse` (хуже), `same` (без изменений) или `unknown`.
+- Помогает мгновенно понять, как правка кода повлияла на производительность и качество.
 
-Каталоги:
+## Benchmark Usage Rule (for AI)
 
-- source:
-  [recordings/benchmarks/ru_to_en/source](/media/yaroslav/DATA/Мой%20переводчик/recordings/benchmarks/ru_to_en/source)
-- runs:
-  [recordings/benchmarks/ru_to_en/runs](/media/yaroslav/DATA/Мой%20переводчик/recordings/benchmarks/ru_to_en/runs)
-
-## Metrics
-
-Сейчас используем такие метрики:
-
-- старт первой озвучки;
-- старт первого queued сегмента;
-- старт первого translated сегмента;
-- дубли queued сегментов;
-- дубли translated сегментов;
-- длинные TTS сегменты;
-- большие gaps между translated сегментами;
-- субъективная проверка качества смысла на ключевых фразах.
-
-Целевые направления интерпретации:
-
-- latency;
-- duplicates;
-- inter-phrase pauses;
-- semantic quality.
-
-## Last Measured Results
-
-Полноценные benchmark-runner прогоны уже получены.
-
-Текущий baseline после отката к старому быстрому состоянию:
-
-- benchmark report:
-  [offline_benchmark_2026-04-26_21-44-57.json](/media/yaroslav/DATA/Мой%20переводчик/recordings/benchmarks/ru_to_en/runs/offline_benchmark_2026-04-26_21-44-57.json)
-- benchmark log:
-  [offline_benchmark_2026-04-26_21-44-57.log](/media/yaroslav/DATA/Мой%20переводчик/recordings/benchmarks/ru_to_en/runs/offline_benchmark_2026-04-26_21-44-57.log)
-
-Ключевые baseline-метрики:
-
-- `queue_start_delay_sec = 0.793`
-- `translate_start_delay_sec = 1.940`
-- `tts_ready_start_delay_sec = 3.002`
-- `duplicate_queued_segments = 0`
-- `duplicate_translated_segments = 0`
-
-Вывод по baseline:
-
-- старт озвучки быстрый;
-- формальных дублей по строкам нет;
-- но остаются semantic duplicates и weak-to-refined pattern:
-  сначала выходит слабая ранняя версия фразы, потом более полная версия той же мысли;
-- межфразовые паузы остаются системной проблемой по всему длинному тексту.
+ИИ (Junie/Codex) ОБЯЗАН:
+1. **После любых изменений** в pipeline или логике обработки звука/текста запускать полный бенчмарк: `python tests/run_ru_to_en_offline_benchmark.py --all`.
+2. **Анализировать `summary.json` и `comparison.json`** последнего прогона.
+3. **Не считать задачу выполненной**, если:
+   - Выросла любая из метрик `delay_sec` (ухудшилась latency).
+   - Увеличилось количество дубликатов (`duplicates`).
+   - Появились новые `long_translation_gaps`.
+   - Резко вырос `realtime_factor`.
+4. В отчете пользователю всегда указывать, как изменились метрики по сравнению с предыдущим состоянием.
 
 ## Rolled Back Experiments
 

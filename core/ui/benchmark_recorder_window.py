@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import sys
+import subprocess
 import threading
 import time
 import wave
@@ -7,17 +10,29 @@ from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
+    QComboBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from core.benchmark.paths import BENCHMARK_AUDIO_PATH, ensure_benchmark_dirs
+from core.benchmark.paths import (
+    BENCHMARK_AUDIO_PATH,
+    BENCHMARK_RUNS_DIR,
+    BENCHMARK_SOURCE_DIR,
+    CATEGORY_MAPPING,
+    ensure_benchmark_dirs,
+    get_category_source_dir,
+    get_test_paths,
+)
 
 
 class BenchmarkRecorderWindow(QWidget):
@@ -49,62 +64,224 @@ class BenchmarkRecorderWindow(QWidget):
         layout = QVBoxLayout(self)
 
         self.info_label = QLabel(
-            "Окно записывает один эталонный аудиофайл для внутреннего RU=>EN benchmark.\n"
-            "Каждая новая запись заменяет предыдущий файл."
+            "Окно для записи и запуска RU=>EN бенчмарков.\n"
+            "Можно записывать новые тесты в категории или запускать существующие."
         )
         self.info_label.setWordWrap(True)
         layout.addWidget(self.info_label)
 
-        controls_layout = QHBoxLayout()
+        # Form for recording new test
+        form_group = QVBoxLayout()
+        form_layout = QFormLayout()
+        
+        self.category_combo = QComboBox()
+        self.category_combo.setEditable(False)
+        for cat_id, cat_name in CATEGORY_MAPPING.items():
+            self.category_combo.addItem(cat_name, cat_id)
+        # self.category_combo.addItem("Custom", "custom") # Removed per simplified UX
+
+        self.test_name_input = QLineEdit()
+        self.test_name_input.setReadOnly(True)
+        self.test_name_input.setStyleSheet("background-color: #f0f0f0;")
+        
+        self._update_test_name_from_category()
+        
+        self.expected_text_input = QTextEdit()
+        self.expected_text_input.setPlaceholderText("Введите эталонный текст здесь...")
+        self.expected_text_input.setMaximumHeight(80)
+
+        form_layout.addRow("Категория:", self.category_combo)
+        form_layout.addRow("Имя теста:", self.test_name_input)
+        form_layout.addRow("Ожидаемый текст:", self.expected_text_input)
+        form_group.addLayout(form_layout)
+        layout.addLayout(form_group)
+
+        # Recording controls
+        record_controls = QHBoxLayout()
         self.record_button = QPushButton("Запись")
         self.stop_button = QPushButton("Стоп")
         self.stop_button.setEnabled(False)
-        controls_layout.addWidget(self.record_button)
-        controls_layout.addWidget(self.stop_button)
-        controls_layout.addStretch(1)
-        layout.addLayout(controls_layout)
+        record_controls.addWidget(self.record_button)
+        record_controls.addWidget(self.stop_button)
+        record_controls.addStretch(1)
+        layout.addLayout(record_controls)
 
+        # Status and info
         self.status_label = QLabel("Статус: idle")
         layout.addWidget(self.status_label)
 
         self.timer_label = QLabel("Таймер: 00:00.0")
         layout.addWidget(self.timer_label)
 
-        self.device_label = QLabel("Устройство ввода: —")
-        self.device_label.setWordWrap(True)
-        layout.addWidget(self.device_label)
+        # Run controls
+        run_group = QVBoxLayout()
+        run_group.addWidget(QLabel("Запуск бенчмарков:"))
+        
+        run_buttons_layout = QHBoxLayout()
+        self.run_selected_button = QPushButton("Запустить текущий")
+        self.run_category_button = QPushButton("Запустить категорию")
+        self.run_all_button = QPushButton("Запустить все")
+        
+        run_buttons_layout.addWidget(self.run_selected_button)
+        run_buttons_layout.addWidget(self.run_category_button)
+        run_buttons_layout.addWidget(self.run_all_button)
+        run_group.addLayout(run_buttons_layout)
+        layout.addLayout(run_group)
 
-        self.file_label = QLabel("Актуальный файл: —")
+        # File info
+        self.file_label = QLabel("Последний файл: —")
         self.file_label.setWordWrap(True)
         layout.addWidget(self.file_label)
+        
+        self.summary_label = QLabel("Последний прогон: —")
+        self.summary_label.setWordWrap(True)
+        layout.addWidget(self.summary_label)
 
-        self.duration_label = QLabel("Длина файла: —")
-        layout.addWidget(self.duration_label)
+        self.comparison_path_label = QLabel("Последнее сравнение: —")
+        self.comparison_path_label.setWordWrap(True)
+        layout.addWidget(self.comparison_path_label)
+
+        self.comparison_status_label = QLabel("Сравнение: нет предыдущего прогона")
+        self.comparison_status_label.setWordWrap(True)
+        self.comparison_status_label.setStyleSheet("font-weight: bold; color: #555;")
+        layout.addWidget(self.comparison_status_label)
 
         layout.addStretch(1)
 
     def _bind_events(self) -> None:
         self.record_button.clicked.connect(self.start_recording)
         self.stop_button.clicked.connect(self.stop_recording)
+        self.run_selected_button.clicked.connect(self.run_selected_test)
+        self.run_category_button.clicked.connect(self.run_category_tests)
+        self.run_all_button.clicked.connect(self.run_all_benchmarks)
+        self.category_combo.currentIndexChanged.connect(self._update_test_name_from_category)
+
+    def _update_test_name_from_category(self) -> None:
+        category = self.category_combo.currentData()
+        if category:
+            self.test_name_input.setText(category)
 
     def _refresh_labels(self) -> None:
-        self.file_label.setText(f"Актуальный файл: {BENCHMARK_AUDIO_PATH}")
-        self.duration_label.setText(
-            f"Длина файла: {self._format_seconds(self._probe_duration_sec(BENCHMARK_AUDIO_PATH))}"
-            if BENCHMARK_AUDIO_PATH.exists()
-            else "Длина файла: файл ещё не записан"
-        )
-        self.device_label.setText(f"Устройство ввода: {self._get_default_input_device_label()}")
+        # We don't have a single current file anymore in the same way, but we can show the last recorded
+        pass
 
-    def _get_default_input_device_label(self) -> str:
+    def _get_target_paths(self) -> tuple[Path, Path]:
+        category = self.category_combo.currentData() or "custom"
+        test_name = self.test_name_input.text().strip()
+        if not test_name:
+            test_name = f"rec_{int(time.time())}"
+        
+        return get_test_paths(category, test_name)
+
+    def run_selected_test(self) -> None:
+        category = self.category_combo.currentData()
+        test_name = self.test_name_input.text().strip()
+        
+        if not test_name:
+            # Fallback to legacy
+            self._run_benchmark_cmd([])
+        else:
+            audio_path, _ = get_test_paths(category, test_name)
+            if not audio_path.exists():
+                QMessageBox.warning(self, "Файл не найден", f"Файл {audio_path} не существует.")
+                return
+            self._run_benchmark_cmd([str(audio_path)])
+
+    def run_category_tests(self) -> None:
+        category = self.category_combo.currentData()
+        if not category:
+            return
+        self._run_benchmark_cmd(["--category", category])
+
+    def run_all_benchmarks(self) -> None:
+        self._run_benchmark_cmd(["--all"])
+
+    def _run_benchmark_cmd(self, args: list[str]) -> None:
+        self.status_label.setText("Статус: запуск бенчмарка...")
+        self.repaint()
+        
+        cmd = [str(Path(sys.executable)), "tests/run_ru_to_en_offline_benchmark.py"] + args
+        
         try:
-            default_input, _default_output = sd.default.device
-            if default_input is None or int(default_input) < 0:
-                return "default input не найден"
-            device = sd.query_devices(int(default_input))
-            return str(device.get("name", "unknown"))
-        except Exception as error:
-            return f"ошибка определения устройства: {error}"
+            # We run it in a separate thread to not freeze UI, but since it's a tool, we might want to just see result
+            # For simplicity of this task, let's run it and then update UI
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout, stderr = process.communicate()
+            
+            if process.returncode == 0:
+                self.status_label.setText("Статус: прогон завершён успешно")
+                # Try to find the last run dir
+                runs = sorted(BENCHMARK_RUNS_DIR.glob("run_*"), reverse=True)
+                if runs:
+                    last_run = runs[0]
+                    self.summary_label.setText(f"Последний прогон: {last_run}")
+                    
+                    # Update comparison info
+                    comp_file = last_run / "comparison.json"
+                    if comp_file.exists():
+                        self.comparison_path_label.setText(f"Последнее сравнение: {comp_file}")
+                        try:
+                            comp_data = json.loads(comp_file.read_text(encoding="utf-8"))
+                            avg_diff = comp_data.get("average_diff", {})
+                            
+                            status_parts = []
+                            for metric in ["realtime_factor", "duplicate_queued_count", "long_translation_gaps_count"]:
+                                if metric in avg_diff:
+                                    status = avg_diff[metric].get("status", "unknown")
+                                    status_parts.append(f"{metric} {status}")
+                            
+                            if status_parts:
+                                self.comparison_status_label.setText(f"Сравнение: {', '.join(status_parts)}")
+                            else:
+                                self.comparison_status_label.setText("Сравнение: данные получены")
+                        except Exception as e:
+                            self.comparison_status_label.setText(f"Сравнение: ошибка чтения ({e})")
+                    else:
+                        summary_file = last_run / "summary.json"
+                        if summary_file.exists():
+                            try:
+                                summary_data = json.loads(summary_file.read_text(encoding="utf-8"))
+                                if summary_data.get("comparison_path"):
+                                    self.comparison_path_label.setText(f"Последнее сравнение: {summary_data['comparison_path']}")
+                                    # We could also try to load it from there
+                                else:
+                                    self.comparison_path_label.setText("Последнее сравнение: —")
+                                    self.comparison_status_label.setText("Сравнение: нет предыдущего прогона")
+                            except Exception:
+                                pass
+            else:
+                self.status_label.setText(f"Статус: ошибка при прогоне (код {process.returncode})")
+                print(stderr)
+                QMessageBox.critical(self, "Ошибка бенчмарка", f"Ошибка при выполнении:\n{stderr}")
+        except Exception as e:
+            self.status_label.setText(f"Статус: системная ошибка")
+            QMessageBox.critical(self, "Ошибка", f"Не удалось запустить бенчмарк:\n{e}")
+
+    def _save_recording(self, audio: np.ndarray, samplerate: int) -> None:
+        ensure_benchmark_dirs()
+        audio_path, expected_path = self._get_target_paths()
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        tmp_path = audio_path.with_suffix(".tmp.wav")
+        pcm16 = np.clip(audio.reshape(-1), -1.0, 1.0)
+        pcm16 = (pcm16 * 32767.0).astype(np.int16)
+
+        with wave.open(str(tmp_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(samplerate)
+            wf.writeframes(pcm16.tobytes())
+
+        if audio_path.exists():
+            audio_path.unlink()
+        tmp_path.replace(audio_path)
+        
+        # Save expected text
+        expected_text = self.expected_text_input.toPlainText().strip()
+        if expected_text:
+            expected_path.write_text(expected_text, encoding="utf-8")
+        
+        self.file_label.setText(f"Последний файл: {audio_path}")
 
     def _input_callback(self, indata, frames, time_info, status) -> None:
         if status:
@@ -187,22 +364,6 @@ class BenchmarkRecorderWindow(QWidget):
         if self._recording_stream is not None:
             self.stop_recording()
         super().closeEvent(event)
-
-    def _save_recording(self, audio: np.ndarray, samplerate: int) -> None:
-        ensure_benchmark_dirs()
-        tmp_path = BENCHMARK_AUDIO_PATH.with_suffix(".tmp.wav")
-        pcm16 = np.clip(audio.reshape(-1), -1.0, 1.0)
-        pcm16 = (pcm16 * 32767.0).astype(np.int16)
-
-        with wave.open(str(tmp_path), "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(samplerate)
-            wf.writeframes(pcm16.tobytes())
-
-        if BENCHMARK_AUDIO_PATH.exists():
-            BENCHMARK_AUDIO_PATH.unlink()
-        tmp_path.replace(BENCHMARK_AUDIO_PATH)
 
     def _update_timer_label(self) -> None:
         if self._recording_started_at <= 0.0:

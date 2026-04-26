@@ -3,7 +3,6 @@ import sys
 from pathlib import Path
 from PySide6.QtWidgets import QApplication
 from core.runtime.backend_manager import BackendManager
-from core.ui.backend_status_window import BackendStatusWindow
 from core.ui.benchmark_recorder_window import BenchmarkRecorderWindow
 from core.ui.main_window import MainWindow
 from core.config.app_config import get_default_branch_config, load_app_config
@@ -46,11 +45,6 @@ def main():
     backend_manager = BackendManager(app_config, Path(__file__).resolve().parent)
     backend_manager.ensure_started_async()
     _startup_log("BackendManager created")
-
-    _startup_log("creating BackendStatusWindow")
-    status_window = BackendStatusWindow(backend_manager)
-    status_window.show()
-    _startup_log("BackendStatusWindow shown")
 
     _startup_log("creating MainWindow")
     window = MainWindow(backend_manager=backend_manager)

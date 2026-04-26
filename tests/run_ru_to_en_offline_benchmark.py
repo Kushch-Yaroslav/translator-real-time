@@ -6,9 +6,11 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import asdict, dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 import numpy as np
 
@@ -45,24 +47,99 @@ class BenchmarkLogEvent:
 
 
 @dataclass
+class BenchmarkMetrics:
+    queued_segments_count: int = 0
+    translated_segments_count: int = 0
+    final_segments_count: int = 0
+
+    duplicate_queued_count: int = 0
+    duplicate_translated_count: int = 0
+
+    long_tts_segments_count: int = 0
+    long_translation_gaps_count: int = 0
+
+    avg_translation_gap_sec: float | None = None
+    max_translation_gap_sec: float | None = None
+
+    avg_tts_duration_sec: float | None = None
+    max_tts_duration_sec: float | None = None
+
+    total_pipeline_time_sec: float | None = None
+    realtime_factor: float | None = None
+
+    expected_word_count: int | None = None
+    final_word_count: int | None = None
+    word_count_diff: int | None = None
+
+
+@dataclass
 class OfflineBenchmarkReport:
+    test_id: str
     input_path: str
-    duration_sec: float
-    first_speech_at_sec: float | None
-    first_queue_at_sec: float | None
-    first_translate_at_sec: float | None
-    first_tts_ready_at_sec: float | None
-    queue_start_delay_sec: float | None
-    translate_start_delay_sec: float | None
-    tts_ready_start_delay_sec: float | None
-    queued_segments: list[str]
-    translated_segments: list[str]
-    final_segments: list[str]
-    duplicate_queued_segments: list[str]
-    duplicate_translated_segments: list[str]
-    long_tts_segments: list[str]
-    long_translation_gaps: list[str]
-    log_path: str
+    expected_path: str | None = None
+    expected_text: str | None = None
+    duration_sec: float = 0.0
+
+    first_speech_at_sec: float | None = None
+    first_queue_at_sec: float | None = None
+    first_translate_at_sec: float | None = None
+    first_tts_ready_at_sec: float | None = None
+
+    queue_start_delay_sec: float | None = None
+    translate_start_delay_sec: float | None = None
+    tts_ready_start_delay_sec: float | None = None
+
+    queued_segments: list[str] = field(default_factory=list)
+    translated_segments: list[str] = field(default_factory=list)
+    final_segments: list[str] = field(default_factory=list)
+
+    duplicate_queued_segments: list[str] = field(default_factory=list)
+    duplicate_translated_segments: list[str] = field(default_factory=list)
+
+    long_tts_segments: list[str] = field(default_factory=list)
+    long_translation_gaps: list[str] = field(default_factory=list)
+
+    metrics: BenchmarkMetrics = field(default_factory=BenchmarkMetrics)
+
+    status: str = "success"
+    error: str | None = None
+    log_path: str = ""
+
+
+@dataclass
+class BenchmarkSummaryTestItem:
+    test_id: str
+    status: str
+    result_path: str
+
+
+@dataclass
+class BenchmarkSummaryAverage:
+    duration_sec: float = 0.0
+    queue_start_delay_sec: float = 0.0
+    translate_start_delay_sec: float = 0.0
+    tts_ready_start_delay_sec: float = 0.0
+    total_pipeline_time_sec: float = 0.0
+    realtime_factor: float = 0.0
+    duplicate_queued_count: float = 0.0
+    duplicate_translated_count: float = 0.0
+    long_translation_gaps_count: float = 0.0
+    long_tts_segments_count: float = 0.0
+
+
+@dataclass
+class BenchmarkSummary:
+    run_id: str
+    started_at: str
+    finished_at: str
+    mode: str
+    concurrency: int
+    total_tests: int
+    success_tests: int
+    failed_tests: int
+    average: BenchmarkSummaryAverage
+    tests: list[BenchmarkSummaryTestItem]
+    comparison_path: str | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -119,9 +196,24 @@ def parse_args() -> argparse.Namespace:
         help="Override Piper CUDA usage. STT/translation still use runtime defaults.",
     )
     parser.add_argument(
+        "--category",
+        help="Run all benchmarks in the specified category.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Run all benchmarks in all categories.",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=2,
+        help="Max parallel benchmark runs.",
+    )
+    parser.add_argument(
         "--output-dir",
-        default=str(BENCHMARK_RUNS_DIR),
-        help="Directory where run artifacts will be written.",
+        default=None,
+        help="Directory where run artifacts will be written. If None, a new run_TIMESTAMP dir is created in BENCHMARK_RUNS_DIR.",
     )
     parser.set_defaults(pace=True, warmup=True)
     return parser.parse_args()
@@ -380,17 +472,20 @@ def wait_for_pipeline_to_flush(engine: AudioEngine, max_wait_sec: float = 20.0) 
         time.sleep(0.05)
 
 
-def run_benchmark(args: argparse.Namespace) -> OfflineBenchmarkReport:
-    ensure_benchmark_dirs()
-    output_dir = Path(args.output_dir)
+def run_benchmark(
+    args: argparse.Namespace,
+    input_path: Path,
+    output_dir: Path,
+    test_id: str = "current",
+) -> OfflineBenchmarkReport:
     output_dir.mkdir(parents=True, exist_ok=True)
+    expected_path = input_path.with_suffix(".expected.txt")
+    expected_text: str | None = None
+    if expected_path.exists():
+        expected_text = expected_path.read_text(encoding="utf-8").strip()
 
-    print("benchmark: build runtime config", flush=True)
     runtime_config, active_branch = build_runtime_config(args.use_cuda_tts)
     samplerate = runtime_config.audio.samplerate
-    print("benchmark: pick input", flush=True)
-    input_path = pick_input_path(args.input_path)
-    print(f"benchmark: decode audio {input_path}", flush=True)
     audio, samplerate = decode_audio_to_float32_mono(input_path, samplerate)
 
     first_speech_at = find_first_speech_at_sec(
@@ -400,7 +495,6 @@ def run_benchmark(args: argparse.Namespace) -> OfflineBenchmarkReport:
     )
 
     log_events: list[BenchmarkLogEvent] = []
-    print("benchmark: start headless engine", flush=True)
     engine, log_started_at = start_headless_engine(
         runtime_config,
         active_branch,
@@ -411,17 +505,16 @@ def run_benchmark(args: argparse.Namespace) -> OfflineBenchmarkReport:
     )
 
     if args.warmup:
-        print("benchmark: warmup runtime", flush=True)
         engine.prewarm_runtime()
 
     chunk_samples = max(1, int((args.chunk_ms / 1000.0) * samplerate))
     feed_started_offset_sec: float | None = None
+    start_pipeline_time = time.perf_counter()
 
     try:
         if engine.realtime_stt is None:
             raise RuntimeError("Realtime STT was not initialized")
 
-        print("benchmark: feed audio", flush=True)
         feed_started_offset_sec = time.perf_counter() - log_started_at
         for offset in range(0, len(audio), chunk_samples):
             chunk = audio[offset: offset + chunk_samples]
@@ -438,22 +531,29 @@ def run_benchmark(args: argparse.Namespace) -> OfflineBenchmarkReport:
                 pace_factor = max(args.pace_factor, 0.01)
                 time.sleep((args.chunk_ms / 1000.0) / pace_factor)
 
-        print("benchmark: commit + done", flush=True)
         engine.realtime_stt.commit()
         engine.realtime_stt.send_done()
-        print("benchmark: wait flush", flush=True)
         wait_for_pipeline_to_flush(engine)
         time.sleep(0.35)
+    except Exception as e:
+        return OfflineBenchmarkReport(
+            test_id=test_id,
+            input_path=str(input_path),
+            status="failed",
+            error=str(e),
+        )
     finally:
-        print("benchmark: stop headless engine", flush=True)
         stop_headless_engine(engine)
 
-    print("benchmark: summarize", flush=True)
+    total_pipeline_time = time.perf_counter() - start_pipeline_time
+
     queued_segments: list[str] = []
     translated_segments: list[str] = []
     final_segments: list[str] = []
     long_tts_segments: list[str] = []
     long_translation_gaps: list[str] = []
+    tts_durations: list[float] = []
+    translation_gaps: list[float] = []
 
     first_queue_at: float | None = None
     first_translate_at: float | None = None
@@ -482,6 +582,7 @@ def run_benchmark(args: argparse.Namespace) -> OfflineBenchmarkReport:
                 first_translate_at = adjusted_at_sec
             if last_translated_at is not None:
                 gap = adjusted_at_sec - last_translated_at
+                translation_gaps.append(gap)
                 if gap > args.gap_long_sec:
                     long_translation_gaps.append(
                         f"{gap:.2f}s gap before '{translated}'"
@@ -496,14 +597,15 @@ def run_benchmark(args: argparse.Namespace) -> OfflineBenchmarkReport:
 
         tts_duration = extract_tts_duration(message)
         if tts_duration is not None:
+            tts_durations.append(tts_duration)
             if first_tts_ready_at is None:
                 first_tts_ready_at = adjusted_at_sec
             if tts_duration > args.tts_long_sec:
                 long_tts_segments.append(f"{tts_duration:.2f}s")
 
-    timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-    log_path = output_dir / f"offline_benchmark_{timestamp}.log"
-    report_path = output_dir / f"offline_benchmark_{timestamp}.json"
+    test_name = Path(input_path).stem
+    log_path = output_dir / f"{test_name}.log"
+    report_path = output_dir / f"{test_name}.json"
 
     log_path.write_text(
         "\n".join(
@@ -518,9 +620,36 @@ def run_benchmark(args: argparse.Namespace) -> OfflineBenchmarkReport:
             return None
         return round(value - origin, 3)
 
+    duration_sec = round(len(audio) / float(samplerate), 3)
+
+    metrics = BenchmarkMetrics(
+        queued_segments_count=len(queued_segments),
+        translated_segments_count=len(translated_segments),
+        final_segments_count=len(final_segments),
+        duplicate_queued_count=len(detect_duplicates(queued_segments)),
+        duplicate_translated_count=len(detect_duplicates(translated_segments)),
+        long_tts_segments_count=len(long_tts_segments),
+        long_translation_gaps_count=len(long_translation_gaps),
+        avg_translation_gap_sec=round(sum(translation_gaps) / len(translation_gaps), 3) if translation_gaps else None,
+        max_translation_gap_sec=round(max(translation_gaps), 3) if translation_gaps else None,
+        avg_tts_duration_sec=round(sum(tts_durations) / len(tts_durations), 3) if tts_durations else None,
+        max_tts_duration_sec=round(max(tts_durations), 3) if tts_durations else None,
+        total_pipeline_time_sec=round(total_pipeline_time, 3),
+        realtime_factor=round(total_pipeline_time / duration_sec, 3) if duration_sec > 0 else None,
+    )
+
+    if expected_text:
+        metrics.expected_word_count = len(expected_text.split())
+        final_full_text = " ".join(final_segments)
+        metrics.final_word_count = len(final_full_text.split())
+        metrics.word_count_diff = metrics.final_word_count - metrics.expected_word_count
+
     report = OfflineBenchmarkReport(
+        test_id=test_id,
         input_path=str(input_path),
-        duration_sec=round(len(audio) / float(samplerate), 3),
+        expected_path=str(expected_path) if expected_path.exists() else None,
+        expected_text=expected_text,
+        duration_sec=duration_sec,
         first_speech_at_sec=None if first_speech_at is None else round(first_speech_at, 3),
         first_queue_at_sec=None if first_queue_at is None else round(first_queue_at, 3),
         first_translate_at_sec=None if first_translate_at is None else round(first_translate_at, 3),
@@ -535,34 +664,284 @@ def run_benchmark(args: argparse.Namespace) -> OfflineBenchmarkReport:
         duplicate_translated_segments=detect_duplicates(translated_segments),
         long_tts_segments=long_tts_segments,
         long_translation_gaps=long_translation_gaps,
+        metrics=metrics,
         log_path=str(log_path),
+        status="success",
     )
 
     report_path.write_text(
         json.dumps(asdict(report), indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
-
-    print(f"input: {input_path}")
-    print(f"duration_sec: {report.duration_sec:.2f}")
-    print(f"first_speech_at_sec: {report.first_speech_at_sec}")
-    print(f"queue_start_delay_sec: {report.queue_start_delay_sec}")
-    print(f"translate_start_delay_sec: {report.translate_start_delay_sec}")
-    print(f"tts_ready_start_delay_sec: {report.tts_ready_start_delay_sec}")
-    print(f"queued_segments: {len(report.queued_segments)}")
-    print(f"translated_segments: {len(report.translated_segments)}")
-    print(f"duplicate_queued_segments: {len(report.duplicate_queued_segments)}")
-    print(f"duplicate_translated_segments: {len(report.duplicate_translated_segments)}")
-    print(f"log: {log_path}")
-    print(f"report: {report_path}")
-
     return report
+
+
+def compare_runs(current_summary: Dict[str, Any], previous_summary: Dict[str, Any]) -> Dict[str, Any]:
+    def get_status(diff: float, field_name: str) -> str:
+        if abs(diff) < 1e-6:
+            return "same"
+        # For these metrics, lower is better
+        better_if_lower = [
+            "realtime_factor",
+            "duplicate_queued_count",
+            "duplicate_translated_count",
+            "long_translation_gaps_count",
+            "long_tts_segments_count",
+            "queue_start_delay_sec",
+            "translate_start_delay_sec",
+            "tts_ready_start_delay_sec",
+            "total_pipeline_time_sec",
+            "word_count_diff",
+        ]
+        if field_name in better_if_lower:
+            return "improved" if diff < 0 else "worse"
+        return "unknown"
+
+    comparison = {
+        "current_run_id": current_summary["run_id"],
+        "previous_run_id": previous_summary["run_id"],
+        "average_diff": {},
+        "tests_diff": [],
+    }
+
+    fields_to_compare = [
+        "queue_start_delay_sec",
+        "translate_start_delay_sec",
+        "tts_ready_start_delay_sec",
+        "total_pipeline_time_sec",
+        "realtime_factor",
+        "duplicate_queued_count",
+        "duplicate_translated_count",
+        "long_translation_gaps_count",
+        "long_tts_segments_count",
+        "word_count_diff",
+    ]
+
+    curr_avg = current_summary.get("average", {})
+    prev_avg = previous_summary.get("average", {})
+
+    for field in fields_to_compare:
+        curr_val = curr_avg.get(field)
+        prev_val = prev_avg.get(field)
+
+        if curr_val is not None and prev_val is not None:
+            diff = curr_val - prev_val
+            comparison["average_diff"][field] = {
+                "previous": prev_val,
+                "current": curr_val,
+                "diff": round(diff, 4),
+                "status": get_status(diff, field),
+            }
+        else:
+            comparison["average_diff"][field] = {
+                "previous": prev_val,
+                "current": curr_val,
+                "diff": None,
+                "status": "unknown",
+            }
+
+    # Compare individual tests
+    curr_tests = {t["test_id"]: t for t in current_summary.get("tests", [])}
+    prev_tests = {t["test_id"]: t for t in previous_summary.get("tests", [])}
+
+    for test_id, curr_test in curr_tests.items():
+        if test_id in prev_tests:
+            prev_test = prev_tests[test_id]
+            # Try to load detailed reports if possible to compare more metrics
+            try:
+                curr_rep = json.loads(Path(curr_test["result_path"]).read_text(encoding="utf-8"))
+                prev_rep = json.loads(Path(prev_test["result_path"]).read_text(encoding="utf-8"))
+
+                test_metrics_diff = {}
+                # Compare main metrics for the test
+                # We can reuse fields_to_compare but need to map them to report structure
+                # In report, some are top level, some are in .metrics
+                
+                def get_val(rep, field):
+                    if field in rep: return rep[field]
+                    if "metrics" in rep and field in rep["metrics"]: return rep["metrics"][field]
+                    return None
+
+                for field in fields_to_compare:
+                    cv = get_val(curr_rep, field)
+                    pv = get_val(prev_rep, field)
+                    if cv is not None and pv is not None:
+                        d = cv - pv
+                        test_metrics_diff[field] = {
+                            "previous": pv,
+                            "current": cv,
+                            "diff": round(d, 4),
+                            "status": get_status(d, field)
+                        }
+
+                comparison["tests_diff"].append({
+                    "test_id": test_id,
+                    "status": "compared",
+                    "metrics": test_metrics_diff
+                })
+            except Exception:
+                comparison["tests_diff"].append({
+                    "test_id": test_id,
+                    "status": "unknown",
+                    "metrics": {}
+                })
+
+    return comparison
 
 
 def main() -> int:
     args = parse_args()
-    run_benchmark(args)
-    return 0
+    ensure_benchmark_dirs()
+
+    input_files: list[tuple[str, Path]] = []
+    mode = "single"
+
+    if args.all:
+        mode = "all"
+        for category_dir in BENCHMARK_SOURCE_DIR.iterdir():
+            if category_dir.is_dir():
+                for wav_file in category_dir.glob("*.wav"):
+                    test_id = f"{category_dir.name}/{wav_file.stem}"
+                    input_files.append((test_id, wav_file))
+    elif args.category:
+        mode = f"category:{args.category}"
+        category_dir = BENCHMARK_SOURCE_DIR / args.category
+        if category_dir.exists() and category_dir.is_dir():
+            for wav_file in category_dir.glob("*.wav"):
+                test_id = f"{args.category}/{wav_file.stem}"
+                input_files.append((test_id, wav_file))
+    else:
+        input_path = pick_input_path(args.input_path)
+        test_id = "current"
+        if args.input_path:
+            p = Path(args.input_path)
+            if p.parent.parent == BENCHMARK_SOURCE_DIR:
+                test_id = f"{p.parent.name}/{p.stem}"
+        input_files.append((test_id, input_path))
+
+    if not input_files:
+        print("No benchmark files found.")
+        return 1
+
+    run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_id = f"run_{run_timestamp}"
+    
+    if args.output_dir:
+        base_output_dir = Path(args.output_dir)
+    else:
+        base_output_dir = BENCHMARK_RUNS_DIR / run_id
+
+    base_output_dir.mkdir(parents=True, exist_ok=True)
+    
+    started_at = datetime.now()
+    reports: list[OfflineBenchmarkReport] = []
+
+    print(f"Starting benchmark run: {run_id} (mode={mode}, concurrency={args.concurrency})")
+
+    def run_one(item: tuple[str, Path]) -> OfflineBenchmarkReport:
+        test_id, input_path = item
+        # If multi-file, create subdirs for categories
+        if "/" in test_id:
+            category, _ = test_id.split("/", 1)
+            test_output_dir = base_output_dir / category
+        else:
+            test_output_dir = base_output_dir
+            
+        print(f"  [RUN] {test_id} ...")
+        rep = run_benchmark(args, input_path, test_output_dir, test_id=test_id)
+        print(f"  [DONE] {test_id} (status={rep.status})")
+        return rep
+
+    if len(input_files) == 1:
+        reports.append(run_one(input_files[0]))
+    else:
+        with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
+            reports = list(executor.map(run_one, input_files))
+
+    finished_at = datetime.now()
+    
+    # Calculate Summary
+    success_reports = [r for r in reports if r.status == "success"]
+    
+    avg = BenchmarkSummaryAverage()
+    if success_reports:
+        count = len(success_reports)
+        avg.duration_sec = round(sum(r.duration_sec for r in success_reports) / count, 2)
+        avg.queue_start_delay_sec = round(sum((r.queue_start_delay_sec or 0) for r in success_reports) / count, 2)
+        avg.translate_start_delay_sec = round(sum((r.translate_start_delay_sec or 0) for r in success_reports) / count, 2)
+        avg.tts_ready_start_delay_sec = round(sum((r.tts_ready_start_delay_sec or 0) for r in success_reports) / count, 2)
+        avg.total_pipeline_time_sec = round(sum((r.metrics.total_pipeline_time_sec or 0) for r in success_reports) / count, 2)
+        avg.realtime_factor = round(sum((r.metrics.realtime_factor or 0) for r in success_reports) / count, 2)
+        avg.duplicate_queued_count = round(sum(r.metrics.duplicate_queued_count for r in success_reports) / count, 2)
+        avg.duplicate_translated_count = round(sum(r.metrics.duplicate_translated_count for r in success_reports) / count, 2)
+        avg.long_translation_gaps_count = round(sum(r.metrics.long_translation_gaps_count for r in success_reports) / count, 2)
+        avg.long_tts_segments_count = round(sum(r.metrics.long_tts_segments_count for r in success_reports) / count, 2)
+
+    summary = BenchmarkSummary(
+        run_id=run_id,
+        started_at=started_at.isoformat(),
+        finished_at=finished_at.isoformat(),
+        mode=mode,
+        concurrency=args.concurrency,
+        total_tests=len(input_files),
+        success_tests=len(success_reports),
+        failed_tests=len(input_files) - len(success_reports),
+        average=avg,
+        tests=[
+            BenchmarkSummaryTestItem(
+                test_id=r.test_id,
+                status=r.status,
+                result_path=str(base_output_dir / f"{r.test_id}.json" if "/" in r.test_id else base_output_dir / f"{Path(r.input_path).stem}.json")
+            ) for r in reports
+        ]
+    )
+
+    summary_path = base_output_dir / "summary.json"
+    
+    # Run Comparison
+    comparison_path = None
+    all_runs = sorted(BENCHMARK_RUNS_DIR.glob("run_*"))
+    # The current run is likely the last one in all_runs if it's already in the directory
+    # or it will be added after we create summary.json.
+    # To be safe, let's find the previous run before this one.
+    previous_run_dir = None
+    for rdir in reversed(all_runs):
+        if rdir.name != run_id:
+            if (rdir / "summary.json").exists():
+                previous_run_dir = rdir
+                break
+    
+    if previous_run_dir:
+        try:
+            prev_summary = json.loads((previous_run_dir / "summary.json").read_text(encoding="utf-8"))
+            comparison = compare_runs(asdict(summary), prev_summary)
+            comp_file = base_output_dir / "comparison.json"
+            comp_file.write_text(json.dumps(comparison, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            comparison_path = str(comp_file)
+            summary.comparison_path = comparison_path
+        except Exception as e:
+            print(f"Failed to create comparison: {e}")
+
+    summary_path.write_text(json.dumps(asdict(summary), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    # Limit to 3 runs
+    all_runs_updated = sorted(BENCHMARK_RUNS_DIR.glob("run_*"))
+    if len(all_runs_updated) > 3:
+        runs_to_delete = all_runs_updated[:-3]
+        for rdir in runs_to_delete:
+            print(f"Deleting old run: {rdir}")
+            try:
+                import shutil
+                shutil.rmtree(rdir)
+            except Exception as e:
+                print(f"Failed to delete {rdir}: {e}")
+
+    print(f"\nRun finished. Total: {summary.total_tests}, Success: {summary.success_tests}, Failed: {summary.failed_tests}")
+    if comparison_path:
+        print(f"Comparison created: {comparison_path}")
+    print(f"Summary: {summary_path}")
+    
+    return 0 if summary.failed_tests == 0 else 1
 
 
 if __name__ == "__main__":
