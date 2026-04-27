@@ -1,0 +1,158 @@
+{
+  "current_run_id": "run_2026-04-27_19-05-39",
+  "previous_run_id": "run_2026-04-27_19-03-35",
+  "average_diff": {
+    "queue_start_delay_sec": {
+      "previous": 0.79,
+      "current": 0.79,
+      "diff": 0.0,
+      "status": "same"
+    },
+    "translate_start_delay_sec": {
+      "previous": 2.06,
+      "current": 2.1,
+      "diff": 0.04,
+      "status": "worse"
+    },
+    "tts_ready_start_delay_sec": {
+      "previous": 3.03,
+      "current": 3.1,
+      "diff": 0.07,
+      "status": "worse"
+    },
+    "total_pipeline_time_sec": {
+      "previous": 42.87,
+      "current": 42.86,
+      "diff": -0.01,
+      "status": "improved"
+    },
+    "realtime_factor": {
+      "previous": 1.06,
+      "current": 1.06,
+      "diff": 0.0,
+      "status": "same"
+    },
+    "duplicate_queued_count": {
+      "previous": 0.0,
+      "current": 0.0,
+      "diff": 0.0,
+      "status": "same"
+    },
+    "duplicate_translated_count": {
+      "previous": 0.0,
+      "current": 0.0,
+      "diff": 0.0,
+      "status": "same"
+    },
+    "semantic_overlap_count": {
+      "previous": 4.0,
+      "current": 3.0,
+      "diff": -1.0,
+      "status": "improved"
+    },
+    "long_translation_gaps_count": {
+      "previous": 6.0,
+      "current": 6.0,
+      "diff": 0.0,
+      "status": "same"
+    },
+    "long_tts_segments_count": {
+      "previous": 4.0,
+      "current": 2.0,
+      "diff": -2.0,
+      "status": "improved"
+    },
+    "word_count_diff": {
+      "previous": null,
+      "current": null,
+      "diff": null,
+      "status": "unknown"
+    },
+    "coverage_ratio": {
+      "previous": 1.098,
+      "current": 1.098,
+      "diff": 0.0,
+      "status": "same"
+    }
+  },
+  "tests_diff": [
+    {
+      "test_id": "large_simple_text/large_simple_text",
+      "status": "compared",
+      "metrics": {
+        "queue_start_delay_sec": {
+          "previous": 0.79,
+          "current": 0.791,
+          "diff": 0.001,
+          "status": "worse"
+        },
+        "translate_start_delay_sec": {
+          "previous": 2.056,
+          "current": 2.097,
+          "diff": 0.041,
+          "status": "worse"
+        },
+        "tts_ready_start_delay_sec": {
+          "previous": 3.031,
+          "current": 3.097,
+          "diff": 0.066,
+          "status": "worse"
+        },
+        "total_pipeline_time_sec": {
+          "previous": 42.869,
+          "current": 42.864,
+          "diff": -0.005,
+          "status": "improved"
+        },
+        "realtime_factor": {
+          "previous": 1.064,
+          "current": 1.064,
+          "diff": 0.0,
+          "status": "same"
+        },
+        "duplicate_queued_count": {
+          "previous": 0,
+          "current": 0,
+          "diff": 0,
+          "status": "same"
+        },
+        "duplicate_translated_count": {
+          "previous": 0,
+          "current": 0,
+          "diff": 0,
+          "status": "same"
+        },
+        "semantic_overlap_count": {
+          "previous": 4,
+          "current": 3,
+          "diff": -1,
+          "status": "improved"
+        },
+        "long_translation_gaps_count": {
+          "previous": 6,
+          "current": 6,
+          "diff": 0,
+          "status": "same"
+        },
+        "long_tts_segments_count": {
+          "previous": 4,
+          "current": 2,
+          "diff": -2,
+          "status": "improved"
+        },
+        "word_count_diff": {
+          "previous": 11,
+          "current": 11,
+          "diff": 0,
+          "status": "same"
+        },
+        "coverage_ratio": {
+          "previous": 1.098,
+          "current": 1.098,
+          "diff": 0.0,
+          "status": "same"
+        }
+      }
+    }
+  ]
+}

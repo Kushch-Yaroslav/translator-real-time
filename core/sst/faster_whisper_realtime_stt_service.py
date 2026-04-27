@@ -96,6 +96,18 @@ class FasterWhisperRealtimeSTTService:
             worker.join(timeout=2.0)
         self.clear()
 
+        # Explicitly delete models to help garbage collector and free CUDA memory
+        if hasattr(self, "_model"):
+            try:
+                import gc
+                import torch
+                del self._model
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+
     def restart(self) -> None:
         self.stop()
         time.sleep(0.15)

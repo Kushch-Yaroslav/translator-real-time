@@ -15,6 +15,7 @@ CATEGORY_MAPPING = {
     "pauses_and_hesitation": "Паузы и запинки",
     "difficult_phrases": "Сложные фразы",
     "noisy_or_unclear": "Шумная / нечеткая речь",
+    "large_simple_text": "Большой простой текст",
 }
 
 # Backward compatibility mapping
