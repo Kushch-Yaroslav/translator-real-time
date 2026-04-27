@@ -189,3 +189,92 @@ recordings/benchmarks/ru_to_en/
 2. Найти общую стратегию борьбы с semantic duplicates без hardcode.
 3. Не допускать роста межфразовых пауз при следующих итерациях.
 4. Продолжать только малыми benchmark-driven изменениями по одной гипотезе за раз.
+
+## Latest Iteration (Live-Validated Baseline)
+
+### What Was Successfully Solved
+
+В последней стабильной итерации были успешно устранены:
+
+- exact duplicates;
+- same-prefix retries, включая кейсы вида `AEMDays / AMDiys / I'm days`;
+- suffix/contained duplicates, включая кейсы уровня `language barrier` и `landing logic`.
+
+### Stabilized Pipeline State
+
+Текущий baseline после live-проверки показывает:
+
+- быстрый старт, примерно `~0.7–1.5 сек`;
+- допустимые межфразовые паузы, примерно `~до 1–1.5 сек`;
+- отсутствие дублей в live Telegram тесте;
+- предсказуемое и стабильное поведение pipeline.
+
+### Incomplete-Fragment Hold/Merge Experiment
+
+Была отдельная попытка улучшить semantic quality через `incomplete-fragment hold/merge` перед translation:
+
+- был добавлен короткий `hold` перед переводом;
+- offline benchmark не показал явных регрессий по safety-метрикам;
+- но в live Telegram тесте:
+  - pipeline стал нестабильным;
+  - появились out-of-order сегменты;
+  - ухудшилось общее качество речи.
+
+### Decision
+
+Решение по итогам live-проверки:
+
+- все изменения `incomplete-fragment hold/merge` были полностью откатаны;
+- система зафиксирована на предыдущем стабильном baseline.
+
+### Current System State
+
+На текущий момент:
+
+- дубли устранены;
+- latency находится в норме;
+- pipeline стабилен;
+- основная оставшаяся проблема: `semantic quality` на коротких незавершённых сегментах.
+
+Типовые примеры оставшейся проблемы:
+
+- `но упирался то в лимит,` + `то в отсутствие.` -> плохой перевод;
+- `который помог мне невероятно.` + `быстро ускорить работу.` -> потеря смысла.
+
+### Key Conclusion
+
+Ключевой вывод этой итерации:
+
+- проблема находится не в duplicates;
+- корень проблемы сейчас в `segmentation / fragmentation`;
+- naive `hold/merge` ломает pipeline и не подходит как решение.
+
+### Validation Rule
+
+Нужно явно зафиксировать:
+
+1. Live Telegram тест является финальным источником истины.
+2. Offline benchmark используется как safety check, но не как единственный критерий качества.
+
+### Rules For Future Changes
+
+Любые будущие изменения:
+
+- не должны ломать стабильность pipeline;
+- не должны ухудшать latency;
+- не должны возвращать дубли;
+- должны проверяться через `live + benchmark`.
+
+### Explicitly Forbidden
+
+Запрещено:
+
+- повторно вводить `hold/merge` без строгого контроля времени и порядка;
+- добавлять эвристики, которые могут ломать порядок сегментов.
+
+### Next Stage Goal
+
+Цель следующего этапа:
+
+- улучшить `semantic quality` без нарушения текущей стабильности;
+- искать решения, которые не требуют удержания сегментов.
