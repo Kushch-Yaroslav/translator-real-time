@@ -278,3 +278,47 @@ recordings/benchmarks/ru_to_en/
 
 - улучшить `semantic quality` без нарушения текущей стабильности;
 - искать решения, которые не требуют удержания сегментов.
+
+## Stopped Filter Experiments
+
+Последние две узкие гипотезы были проверены и в текущем виде остановлены как неполезные.
+
+### 1. Post-Translation Short-Fragment Filter
+
+Что проверяли:
+
+- узкий post-translation фильтр коротких low-confidence translated fragments перед TTS.
+
+Результат:
+
+- benchmark-проверка не показала реальной активации фильтра;
+- `skipped fragments = none`.
+
+Решение:
+
+- подход не дал результата в текущем виде;
+- дальнейшая работа по этому фильтру остановлена.
+
+### 2. Source-Side Admission Rule
+
+Что проверяли:
+
+- узкое source-side admission rule для `RU => EN` fragments перед `LOWLAT sentence queued`.
+
+Результат:
+
+- benchmark-проверка не показала реальной блокировки target-fragments;
+- `blocked fragments = none`.
+
+Решение:
+
+- подход не дал результата в текущем виде;
+- дальнейшее усиление этого admission rule запрещено без отдельного разрешения.
+
+### Current Decision
+
+Нужно явно зафиксировать:
+
+1. Оба подхода (`post-translation filter` и `source-side admission rule`) остановлены как неполезные в текущем виде.
+2. Текущий рабочий baseline остаётся предыдущим stable live-validated baseline.
+3. Следующая работа должна начинаться не с новых фильтров, а с нового анализа / новой гипотезы о root cause.

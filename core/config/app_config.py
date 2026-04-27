@@ -94,6 +94,7 @@ class TTSRuntimeConfig:
     data_dir: str = "/media/yaroslav/DATA/ai_models/piper"
     use_cuda: bool | None = None
     max_queue_latency_sec: float = 0.75
+    strict_short_translated_fragment_filter: bool = True
 
 
 @dataclass

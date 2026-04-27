@@ -55,3 +55,81 @@ def test_prepare_phrase_keeps_safe_continuation_tail() -> None:
         )
         == "которым активно пользуюсь до сих пор."
     )
+
+
+def test_strict_short_translated_fragment_skip_requires_all_signals() -> None:
+    engine = _build_engine()
+    engine._recent_translated_texts = ["I solved it because of the language barrier."]
+
+    assert (
+        engine._should_skip_strict_short_translated_fragment(
+            "потому что",
+            "because of the",
+        )
+        is True
+    )
+
+
+def test_strict_short_translated_fragment_keeps_new_thought() -> None:
+    engine = _build_engine()
+    engine._recent_translated_texts = ["I solved it because of the language barrier."]
+
+    assert (
+        engine._should_skip_strict_short_translated_fragment(
+            "и я решил",
+            "And I decided",
+        )
+        is False
+    )
+
+
+def test_strict_short_translated_fragment_keeps_contentful_short_phrase() -> None:
+    engine = _build_engine()
+    engine._recent_translated_texts = ["My English became weaker over time."]
+
+    assert (
+        engine._should_skip_strict_short_translated_fragment(
+            "потому что мой английский слабее",
+            "Because my English is weaker",
+        )
+        is False
+    )
+
+
+def test_strict_short_translated_fragment_keeps_named_entity() -> None:
+    engine = _build_engine()
+    engine._recent_translated_texts = ["When I worked at AMD, I built landing pages."]
+
+    assert (
+        engine._should_skip_strict_short_translated_fragment(
+            "когда я работал в amd",
+            "when I worked at AMD",
+        )
+        is False
+    )
+
+
+def test_strict_short_translated_fragment_skips_five_word_retry_tail() -> None:
+    engine = _build_engine()
+    engine._recent_translated_source_texts = ["но опирался то в лимит,"]
+
+    assert (
+        engine._should_skip_strict_short_translated_fragment(
+            "упирался то в лимит,",
+            "and clung to the limit,",
+        )
+        is True
+    )
+
+
+def test_strict_short_translated_fragment_requires_source_retry_coverage() -> None:
+    engine = _build_engine()
+    engine._recent_translated_source_texts = ["сначала я пользовался бесплатными сервисами."]
+
+    assert (
+        engine._should_skip_strict_short_translated_fragment(
+            "упирался то в лимит,",
+            "and clung to the limit,",
+        )
+        is False
+    )
