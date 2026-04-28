@@ -1,0 +1,32 @@
+{
+  "run_id": "run_2026-04-28_19-20-44",
+  "started_at": "2026-04-28T19:20:44.860100",
+  "finished_at": "2026-04-28T19:21:34.061027",
+  "mode": "category:large_simple_text",
+  "concurrency": 1,
+  "total_tests": 1,
+  "success_tests": 1,
+  "failed_tests": 0,
+  "average": {
+    "duration_sec": 40.28,
+    "queue_start_delay_sec": 0.8,
+    "translate_start_delay_sec": 2.1,
+    "tts_ready_start_delay_sec": 3.14,
+    "total_pipeline_time_sec": 42.86,
+    "realtime_factor": 1.06,
+    "duplicate_queued_count": 0.0,
+    "duplicate_translated_count": 0.0,
+    "semantic_overlap_count": 3.0,
+    "long_translation_gaps_count": 6.0,
+    "long_tts_segments_count": 2.0,
+    "coverage_ratio": 1.009
+  },
+  "tests": [
+    {
+      "test_id": "large_simple_text/large_simple_text",
+      "status": "success",
+      "result_path": "/media/yaroslav/DATA/Мой переводчик/recordings/benchmarks/ru_to_en/runs/run_2026-04-28_19-20-44/large_simple_text/large_simple_text.json"
+    }
+  ],
+  "comparison_path": "/media/yaroslav/DATA/Мой переводчик/recordings/benchmarks/ru_to_en/runs/run_2026-04-28_19-20-44/comparison.json"
+}

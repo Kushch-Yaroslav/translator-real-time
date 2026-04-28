@@ -315,10 +315,80 @@ recordings/benchmarks/ru_to_en/
 - подход не дал результата в текущем виде;
 - дальнейшее усиление этого admission rule запрещено без отдельного разрешения.
 
+### 3. Context-Aware Translation MVP
+
+Что проверяли:
+
+- узкий `RU => EN` translation MVP с коротким previous source context только для ограниченного набора context-sensitive fragments;
+- сегментация, очередь, TTS и final cleanup не менялись;
+- feature был добавлен под флаг `ru_to_en_context_aware_translation_enabled`.
+
+Результат:
+
+- MVP технически сработал и context реально применялся;
+- но context leaked into output:
+  модель начала повторять previous context в переводе current fragment;
+- ухудшились benchmark safety-метрики latency;
+- live Telegram test был пропущен, потому что offline safety-check уже показал неприемлемый результат.
+
+Решение:
+
+- гипотеза не принята;
+- feature disabled в baseline (`ru_to_en_context_aware_translation_enabled = False`);
+- дальше не развивать эту гипотезу без новой стратегии защиты от `context leakage`.
+
+### 4. Partial Stability Filter MVP
+
+Что проверяли:
+
+- узкий `RU => EN` partial stability filter только на partial-path;
+- только для зависимых starters (`как / чтобы / то / который / ...`);
+- со строгим `exact-repeat` criterion для `stable accepted`;
+- translation, TTS, final cleanup и duplicate filters не менялись.
+
+Результат:
+
+- MVP технически начал работать;
+- `unstable skipped` оказалось слишком много;
+- `stable accepted` оказалось слишком мало;
+- ухудшились `coverage_ratio` и `long_translation_gaps_count`;
+- live Telegram test был пропущен, потому что offline safety-check уже показал неприемлемый результат.
+
+Решение:
+
+- partial stability filter MVP не принят;
+- baseline возвращён без этой partial-логики;
+- `exact-repeat` partial stability дальше не развивать без новой стратегии, потому что критерий слишком строгий и режет полезные fragments.
+
+### 5. Comma-Tail `то ...` Partial-Path MVP
+
+Что проверяли:
+
+- узкий `RU => EN` partial-path MVP только для `comma-produced tail`;
+- только pattern `starts with "то"`;
+- только короткие fragments (`<= 5` слов);
+- final-path, translation, TTS, cleanup и duplicate filters не менялись.
+
+Результат:
+
+- benchmark-проверка не показала реальной активации правила;
+- `skipped fragments = 0`;
+- заметного влияния на pipeline не было;
+- live Telegram test был пропущен как ненужный.
+
+Решение:
+
+- `comma-tail "то ..."` partial-path MVP не принят;
+- baseline возвращён без этого exact trigger;
+- дальше не развивать этот exact trigger без нового анализа, потому что он не совпал с реальным path появления problematic fragments.
+
 ### Current Decision
 
 Нужно явно зафиксировать:
 
-1. Оба подхода (`post-translation filter` и `source-side admission rule`) остановлены как неполезные в текущем виде.
-2. Текущий рабочий baseline остаётся предыдущим stable live-validated baseline.
-3. Следующая работа должна начинаться не с новых фильтров, а с нового анализа / новой гипотезы о root cause.
+1. Оба фильтрационных подхода (`post-translation filter` и `source-side admission rule`) остановлены как неполезные в текущем виде.
+2. `Context-aware translation MVP` тоже не принят и выключен флагом.
+3. `Partial stability filter MVP` тоже не принят и откатан.
+4. `Comma-tail "то ..."` partial-path MVP тоже не принят и откатан.
+5. Текущий рабочий baseline остаётся предыдущим stable live-validated baseline.
+6. Следующая работа должна начинаться не с новых фильтров или расширения context-MVP, а с нового анализа / новой гипотезы о root cause.

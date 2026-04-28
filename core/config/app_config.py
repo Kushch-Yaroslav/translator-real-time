@@ -68,6 +68,7 @@ class STTConfig:
 class TranslationRuntimeConfig:
     direction: str = "en_to_ru"
     enabled: bool = True
+    ru_to_en_context_aware_translation_enabled: bool = False
 
 
 @dataclass

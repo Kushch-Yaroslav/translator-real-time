@@ -40,7 +40,18 @@ from core.tts.tts_service import TTSService, TTSConfig
 
 
 class AudioEngine:
-    _RU_TO_EN_DEPENDENT_SUFFIX_ADMISSION_FILTER_ENABLED = True
+    _RU_TO_EN_DEPENDENT_SUFFIX_ADMISSION_FILTER_ENABLED = False
+    _RU_TO_EN_CONTEXT_SENSITIVE_STARTERS = (
+        "как",
+        "чтобы",
+        "то",
+        "который",
+        "которая",
+        "которое",
+        "которые",
+        "которым",
+        "которую",
+    )
     _KNOWN_STANDALONE_STT_HALLUCINATIONS = frozenset({
         "продолжение следует",
     })
@@ -752,7 +763,10 @@ class AudioEngine:
 
             translation_started_at = time.perf_counter()
             try:
-                translated_text = translation_service.translate(text)
+                translated_text = self._translate_ru_to_en_with_optional_context(
+                    translation_service,
+                    text,
+                )
             except Exception as error:
                 self._handle_error(f"Translation error: {error}")
                 return
@@ -793,6 +807,123 @@ class AudioEngine:
         self._remember_translated_source_text_for_compare(text)
         self._log(f"TRANSLATED: {translated_text}")
         self._enqueue_tts_text(translated_text)
+
+    def _translate_ru_to_en_with_optional_context(
+        self,
+        translation_service: TranslationService,
+        text: str,
+    ) -> str:
+        branch_config = self._get_active_branch_config()
+        if branch_config.translation_direction != "ru_to_en":
+            return translation_service.translate(text)
+
+        rewritten_text = self._rewrite_ru_to_en_source_before_translation(text)
+        if rewritten_text != self._normalize_text(text):
+            self._log(
+                "RU2EN source rewrite before translation: "
+                f"{self._normalize_text(text)} -> {rewritten_text}"
+            )
+            text = rewritten_text
+
+        if not self.app_config.translation.ru_to_en_context_aware_translation_enabled:
+            return translation_service.translate(text)
+
+        current_text = self._normalize_text(text)
+        if not self._should_use_ru_to_en_translation_context(current_text):
+            return translation_service.translate(current_text)
+
+        context_text = self._get_ru_to_en_translation_context(current_text)
+        if not context_text:
+            return translation_service.translate(current_text)
+
+        self._log(
+            "RU2EN context translation used:\n"
+            f"CONTEXT: {context_text}\n"
+            f"CURRENT: {current_text}"
+        )
+
+        combined_source = self._normalize_text(f"{context_text} {current_text}")
+        combined_translated = self._normalize_text(translation_service.translate(combined_source))
+        previous_translated = self._normalize_text(self.last_translated_text)
+        contextual_tail = self._normalize_text(
+            self._extract_incremental_text(previous_translated, combined_translated)
+        )
+        if contextual_tail:
+            self._log(f"RU2EN context translated output: {contextual_tail}")
+            return contextual_tail
+
+        self._log("RU2EN context translation fallback: incremental tail empty")
+        return combined_translated
+
+    def _rewrite_ru_to_en_source_before_translation(self, text: str) -> str:
+        source_text = self._normalize_text(text)
+        normalized = self._normalize_compare_text(source_text)
+        if not normalized:
+            return source_text
+
+        words = normalized.split()
+        if len(words) > 7:
+            return source_text
+        if "я" in words:
+            return source_text
+        if not words or words[0] != "которым" or "пользуюсь" not in words:
+            return source_text
+
+        raw_words = source_text.split()
+        if not raw_words:
+            return source_text
+
+        tail_words = raw_words[1:]
+        if not tail_words:
+            return source_text
+
+        rewritten_words = ["я"]
+        inserted_object = False
+        for raw_word in tail_words:
+            rewritten_words.append(raw_word)
+            if not inserted_object and raw_word.strip(".,!?;:").lower() == "пользуюсь":
+                rewritten_words.append("этим")
+                inserted_object = True
+
+        if not inserted_object:
+            return source_text
+
+        return self._normalize_text(" ".join(rewritten_words))
+
+    def _should_use_ru_to_en_translation_context(self, text: str) -> bool:
+        normalized = self._normalize_compare_text(text)
+        if not normalized:
+            return False
+
+        words = normalized.split()
+        if len(words) > 6:
+            return False
+
+        for starter in self._RU_TO_EN_CONTEXT_SENSITIVE_STARTERS:
+            if normalized == starter or normalized.startswith(f"{starter} "):
+                return True
+        return False
+
+    def _get_ru_to_en_translation_context(self, current_text: str) -> str:
+        current_norm = self._normalize_compare_text(current_text)
+        if not current_norm:
+            return ""
+
+        skipped_current = False
+        for previous_text in reversed(self._ru_to_en_emitted_phrases):
+            previous_norm = self._normalize_compare_text(previous_text)
+            if not previous_norm:
+                continue
+            if not skipped_current and previous_norm == current_norm:
+                skipped_current = True
+                continue
+
+            context_words = self._normalize_text(previous_text).split()
+            if not context_words:
+                return ""
+            return " ".join(context_words[-12:]).strip()
+
+        return ""
 
     def _enqueue_tts_text(self, text: str) -> None:
         if not self.running or self._translation_paused:
@@ -1542,8 +1673,10 @@ class AudioEngine:
                 self._expire_ru_to_en_pending_phrase(now)
                 return
 
-            for phrase in completed_phrases:
+            for index, phrase in enumerate(completed_phrases):
                 candidate = self._normalize_text(phrase)
+                if self._should_skip_ru_to_en_partial_refinement(candidate):
+                    continue
                 if not self._allow_ru_to_en_source_fragment(
                     candidate,
                     source_context="",
@@ -1560,13 +1693,16 @@ class AudioEngine:
                     )
                     self._reset_ru_to_en_pending_phrase()
                     continue
-                if not self._mark_ru_to_en_partial_phrase_seen(candidate, now):
+                early_stable_partial = self._should_early_admit_ru_to_en_partial(candidate)
+                if not early_stable_partial and not self._mark_ru_to_en_partial_phrase_seen(candidate, now):
                     return
 
                 self._ru_to_en_last_emitted_at = now
                 self._remember_ru_to_en_emitted_phrase(candidate)
                 self._low_latency_generation += 1
                 self._low_latency_last_queued_text = candidate
+                if early_stable_partial:
+                    self._log(f"LOWLAT early-stable partial accepted: {candidate}")
                 self._log(f"LOWLAT sentence queued: {candidate}")
                 self._enqueue_low_latency_text(
                     candidate,
@@ -1687,7 +1823,8 @@ class AudioEngine:
             # RU=>EN: faster-whisper partials are unstable and can rewrite earlier text.
             # Using a simple index causes us to "miss" newly-appearing phrases.
             # Emit any phrase we haven't emitted yet (dedup by normalized phrase).
-            for sentence in completed_sentences:
+            for index, sentence in enumerate(completed_sentences):
+                previous_sentence = completed_sentences[index - 1] if index > 0 else ""
                 normalized_sentence = self._prepare_ru_to_en_phrase_for_queue(sentence)
                 if len(normalized_sentence.split()) < phrase_min_words:
                     continue
@@ -2269,6 +2406,77 @@ class AudioEngine:
 
         return True
 
+    def _should_skip_ru_to_en_partial_refinement(self, current_source: str) -> bool:
+        if self._get_active_branch_config().translation_direction != "ru_to_en":
+            return False
+
+        current_source = self._normalize_text(current_source)
+        previous_source = self._normalize_text(self._low_latency_last_queued_text)
+        if not current_source or not previous_source:
+            return False
+
+        if current_source.endswith((".", "!", "?")):
+            return False
+
+        current_norm = self._normalize_compare_text(current_source).strip(".,!?;: ")
+        previous_norm = self._normalize_compare_text(previous_source).strip(".,!?;: ")
+        if not current_norm or not previous_norm or current_norm == previous_norm:
+            return False
+
+        prefix = f"{previous_norm} "
+        if not current_norm.startswith(prefix):
+            return False
+
+        suffix = current_norm[len(prefix):].strip()
+        if not suffix:
+            return False
+
+        delta_words = suffix.split()
+        if not 1 <= len(delta_words) <= 2:
+            return False
+
+        self._log(f"LOWLAT skipped partial refinement: {previous_source} -> {current_source}")
+        return True
+
+    def _should_early_admit_ru_to_en_partial(self, fragment: str) -> bool:
+        if self._get_active_branch_config().translation_direction != "ru_to_en":
+            return False
+
+        fragment = self._normalize_text(fragment)
+        normalized = self._normalize_compare_text(fragment)
+        if not fragment or not normalized:
+            return False
+
+        words = normalized.split()
+        if len(words) < 4:
+            return False
+
+        suspicious_starters = (
+            "так как",
+            "потому что",
+            "чтобы",
+            "который",
+            "которая",
+            "которое",
+            "которые",
+            "которым",
+            "которую",
+            "то",
+        )
+        for starter in suspicious_starters:
+            if normalized == starter or normalized.startswith(f"{starter} "):
+                return False
+
+        trailing_token = words[-1]
+        if trailing_token in {"в", "на", "для", "с", "по", "от", "из", "и", "но", "или"}:
+            return False
+
+        def looks_like_verb(word: str) -> bool:
+            token = word.strip(".,!?;:").lower()
+            return token.endswith(("ю", "ет", "ит", "ал", "ил"))
+
+        return any(looks_like_verb(word) for word in words)
+
     def _mark_ru_to_en_partial_phrase_seen(self, phrase: str, now: float) -> bool:
         phrase = self._normalize_text(phrase)
         phrase_norm = self._normalize_compare_text(phrase)
@@ -2343,6 +2551,8 @@ class AudioEngine:
                 remaining_raw_words = phrase_words[common_prefix_len:]
                 if remaining_raw_words:
                     remaining_text = self._normalize_text(" ".join(remaining_raw_words))
+                    if self._should_skip_ru_to_en_prepare_born_suffix_tail_to(remaining_text):
+                        return ""
                     if (
                         self._is_ru_to_en_safe_suffix_emit(remaining_text)
                         and self._allow_ru_to_en_source_fragment(
@@ -2359,6 +2569,8 @@ class AudioEngine:
             )
             incremental_norm = self._normalize_compare_text(incremental)
             if incremental_norm and incremental_norm != phrase_norm:
+                if self._should_skip_ru_to_en_prepare_born_suffix_tail_to(incremental):
+                    return ""
                 if (
                     self._is_ru_to_en_safe_suffix_emit(incremental)
                     and self._allow_ru_to_en_source_fragment(
@@ -2398,6 +2610,22 @@ class AudioEngine:
             return ""
 
         return phrase
+
+    def _should_skip_ru_to_en_prepare_born_suffix_tail_to(self, fragment: str) -> bool:
+        fragment = self._normalize_text(fragment)
+        normalized = self._normalize_compare_text(fragment)
+        if not normalized:
+            return False
+
+        words = normalized.split()
+        if len(words) > 5:
+            return False
+
+        if words[0] != "то":
+            return False
+
+        self._log(f"LOWLAT skipped prepare-born suffix-tail то: {fragment}")
+        return True
 
     def _allow_ru_to_en_source_fragment(
         self,
