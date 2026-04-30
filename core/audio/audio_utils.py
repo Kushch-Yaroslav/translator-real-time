@@ -3,10 +3,14 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any
 import re
 
-import sounddevice as sd
-
 
 PULSE_DEVICE_NAME = "pulse"
+
+
+def _get_sounddevice():
+    import sounddevice as sd
+
+    return sd
 
 
 def stop_stream(stream) -> None:
@@ -27,6 +31,7 @@ def stop_stream(stream) -> None:
 
 
 def query_sounddevice_devices() -> List[Dict[str, Any]]:
+    sd = _get_sounddevice()
     return sd.query_devices()
 
 
@@ -80,6 +85,7 @@ def _extract_search_tokens(device_name: str) -> List[str]:
 
 
 def find_pulse_device_index(is_input: bool) -> Optional[int]:
+    sd = _get_sounddevice()
     devices = sd.query_devices()
 
     for index, device in enumerate(devices):
@@ -105,6 +111,7 @@ def find_sounddevice_device_index_by_name(
         min_output_channels: int = 0,
         prefer_pulse: bool = False,
 ) -> Optional[int]:
+    sd = _get_sounddevice()
     if prefer_pulse:
         pulse_index = find_pulse_device_index(is_input=min_input_channels > 0)
         if pulse_index is not None:
@@ -155,6 +162,7 @@ def find_sounddevice_device_index_by_name(
 
 
 def create_input_stream(device_index: int, samplerate: int, channels: int, blocksize: int, callback):
+    sd = _get_sounddevice()
     return sd.InputStream(
         device=device_index,
         samplerate=samplerate,
@@ -166,6 +174,7 @@ def create_input_stream(device_index: int, samplerate: int, channels: int, block
 
 
 def create_output_stream(device_index: int, samplerate: int, channels: int, blocksize: int, callback):
+    sd = _get_sounddevice()
     return sd.OutputStream(
         device=device_index,
         samplerate=samplerate,
@@ -184,6 +193,7 @@ def create_duplex_stream(
         blocksize: int,
         callback,
 ):
+    sd = _get_sounddevice()
     return sd.Stream(
         device=(input_device_index, output_device_index),
         samplerate=samplerate,

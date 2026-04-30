@@ -3,7 +3,7 @@ from __future__ import annotations
 import queue
 import threading
 from dataclasses import dataclass
-from typing import Optional, Callable
+from typing import Optional, Callable, Any
 
 import numpy as np
 
@@ -29,7 +29,7 @@ class AudioSession:
         self.output_stream = None
 
         self.input_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=config.input_queue_maxsize)
-        self.output_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=config.output_queue_maxsize)
+        self.output_queue: queue.Queue[Any] = queue.Queue(maxsize=config.output_queue_maxsize)
 
         self.running = False
         self.stopping = False
@@ -38,6 +38,9 @@ class AudioSession:
         self.on_input_overflow: Optional[Callable[[], None]] = None
         self.on_output_underflow: Optional[Callable[[], None]] = None
         self.on_error: Optional[Callable[[str], None]] = None
+        self.on_playback_started: Optional[Callable[[str], None]] = None
+        self.on_playback_finished: Optional[Callable[[str], None]] = None
+        self.on_playback_skipped: Optional[Callable[[str, str], None]] = None
 
     def start(self) -> None:
         with self._lock:
@@ -102,15 +105,24 @@ class AudioSession:
         with self._lock:
             self.stopping = False
 
-    def clear_output_queue(self) -> int:
+    def clear_output_queue(self, reason: str = "cleared") -> int:
         cleared = 0
+        skipped_texts: set[str] = set()
 
         while not self.output_queue.empty():
             try:
-                self.output_queue.get_nowait()
+                item = self.output_queue.get_nowait()
                 cleared += 1
+                if isinstance(item, tuple) and len(item) == 4:
+                    _chunk, text, _is_start, _is_end = item
+                    if text:
+                        skipped_texts.add(text)
             except queue.Empty:
                 break
+
+        if self.on_playback_skipped:
+            for text in skipped_texts:
+                self.on_playback_skipped(text, reason)
 
         return cleared
 
@@ -153,10 +165,21 @@ class AudioSession:
                 return
 
             try:
-                chunk = self.output_queue.get_nowait()
+                item = self.output_queue.get_nowait()
             except queue.Empty:
                 outdata.fill(0)
                 return
+
+            text = ""
+            is_start = False
+            is_end = False
+            if isinstance(item, tuple) and len(item) == 4:
+                chunk, text, is_start, is_end = item
+            else:
+                chunk = item
+
+            if is_start and text and self.on_playback_started:
+                self.on_playback_started(text)
 
             if chunk.shape[0] != frames:
                 if chunk.shape[0] > frames:
@@ -166,5 +189,7 @@ class AudioSession:
                     chunk = np.vstack([chunk, padding])
 
             outdata[:] = chunk.astype(np.float32, copy=False)
+            if is_end and text and self.on_playback_finished:
+                self.on_playback_finished(text)
         except Exception:
             outdata.fill(0)

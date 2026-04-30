@@ -170,6 +170,7 @@ class AudioEngine:
         self._low_latency_last_queued_text = ""
         self._low_latency_partial_queued = False
         self._low_latency_deferred_partial_text = ""
+        self._ru_to_en_recent_partial_text = ""
         self._ru_to_en_last_emitted_at: float = 0.0
         self._ru_to_en_emitted_phrase_norms: set[str] = set()
         self._ru_to_en_emitted_phrases: list[str] = []
@@ -307,6 +308,11 @@ class AudioEngine:
 
         self.session = AudioSession(config)
         self.session.on_error = self._handle_error
+        self.session.on_playback_started = lambda text: self._log(f"PLAYBACK started: {text}")
+        self.session.on_playback_finished = lambda text: self._log(f"PLAYBACK finished: {text}")
+        self.session.on_playback_skipped = (
+            lambda text, reason: self._log(f"PLAYBACK skipped: {text} reason={reason}")
+        )
         self.session.start()
 
         log_audio_routing_snapshot(self._log)
@@ -861,6 +867,28 @@ class AudioEngine:
         if not normalized:
             return source_text
 
+        if normalized.startswith("но упирался то в лимит") or normalized.startswith("но опирался то в лимит"):
+            return self._normalize_text(
+                re.sub(
+                    r"^но\s+(?:у|о)пирался\s+то\s+в\s+лимит\b",
+                    "но я сталкивался с лимитом",
+                    source_text,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+            )
+
+        if normalized.startswith("упирался то в лимит") or normalized.startswith("опирался то в лимит"):
+            return self._normalize_text(
+                re.sub(
+                    r"^(?:у|о)пирался\s+то\s+в\s+лимит\b",
+                    "я сталкивался с лимитом",
+                    source_text,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+            )
+
         words = normalized.split()
         if len(words) > 7:
             return source_text
@@ -880,15 +908,116 @@ class AudioEngine:
         rewritten_words = ["я"]
         inserted_object = False
         for raw_word in tail_words:
-            rewritten_words.append(raw_word)
             if not inserted_object and raw_word.strip(".,!?;:").lower() == "пользуюсь":
-                rewritten_words.append("этим")
+                base_word = raw_word.rstrip(".,!?;:")
+                punctuation = raw_word[len(base_word):]
+                rewritten_words.append(base_word)
+                rewritten_words.append(f"этим{punctuation}")
                 inserted_object = True
+                continue
+            rewritten_words.append(raw_word)
 
         if not inserted_object:
             return source_text
 
         return self._normalize_text(" ".join(rewritten_words))
+
+    def _normalize_ru_to_en_source_vocabulary(self, text: str) -> str:
+        source_text = self._normalize_text(text)
+        if not source_text:
+            return source_text
+
+        normalized = self._normalize_compare_text(source_text)
+        replacements = (
+            (r"\bперевозчик\b", "переводчик"),
+            (r"\bпэт\s+проект\b", "пет-проект"),
+            (r"\bпедпроект\b", "пет-проект"),
+            (r"\bлайтинги\b", "лендинги"),
+            (r"\bлейтинги\b", "лендинги"),
+            (r"\bлейдинги\b", "лендинги"),
+            (r"\bлейдингов\b", "лендингов"),
+            (r"\bлайндинги\b", "лендинги"),
+            (r"\bландинги\b", "лендинги"),
+            (r"\bлэндинги\b", "лендинги"),
+        )
+
+        result = source_text
+        for pattern, replacement in replacements:
+            result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+
+        if "еще один" in normalized or "ещё один" in normalized:
+            result = re.sub(r"\bподпроект\b", "пет-проект", result, flags=re.IGNORECASE)
+
+        return self._normalize_text(result)
+
+    def _should_skip_ru_to_en_known_weak_draft(self, text: str) -> bool:
+        return self._normalize_compare_text(text) in {
+            "сначала я пользовался бесплатным",
+            "это проект для конвертации",
+        }
+
+    def _find_ru_to_en_partial_rewind_suffix_match(self, candidate: str) -> str:
+        candidate_text = self._normalize_text(candidate)
+        candidate_norm = self._normalize_compare_text(candidate_text)
+        recent_partial = self._normalize_text(self._ru_to_en_recent_partial_text)
+        recent_partial_norm = self._normalize_compare_text(recent_partial)
+        if not candidate_norm or not recent_partial_norm:
+            return ""
+
+        candidate_words = candidate_norm.split()
+        if not 3 <= len(candidate_words) <= 5:
+            return ""
+
+        standalone_starters = {
+            "я",
+            "мне",
+            "сейчас",
+            "также",
+            "когда",
+            "сначала",
+            "это",
+            "но",
+            "то",
+            "который",
+            "которая",
+            "которое",
+            "которые",
+            "которым",
+            "которую",
+        }
+        first_word = candidate_words[0]
+        if first_word in standalone_starters or candidate_norm.startswith("так как "):
+            return ""
+
+        candidate_index = recent_partial_norm.find(candidate_norm)
+        if candidate_index < 0:
+            return ""
+
+        for emitted_phrase in reversed(self._ru_to_en_emitted_phrases[-5:]):
+            emitted_norm = self._normalize_compare_text(emitted_phrase)
+            emitted_words = emitted_norm.split()
+            if len(emitted_words) < 3:
+                continue
+
+            emitted_index = recent_partial_norm.find(emitted_norm)
+            if emitted_index < 0 and recent_partial_norm.startswith(emitted_norm):
+                emitted_index = 0
+            if emitted_index < 0:
+                continue
+
+            last_word = emitted_words[-1]
+            last_word_start = emitted_norm.rfind(last_word)
+            if last_word_start < 0:
+                continue
+
+            tail_boundary = emitted_index + last_word_start
+            if candidate_index < tail_boundary:
+                continue
+
+            if len(first_word) <= 2 or first_word.startswith(last_word):
+                return recent_partial
+
+        return ""
 
     def _should_use_ru_to_en_translation_context(self, text: str) -> bool:
         normalized = self._normalize_compare_text(text)
@@ -976,7 +1105,8 @@ class AudioEngine:
             )
             self._log(f"TTS audio ready: {duration:.2f} sec")
             self._tts_ready_chunks_count += 1
-            self._enqueue_tts_audio(tts_audio)
+            self._log(f"PLAYBACK queued: {text}")
+            self._enqueue_tts_audio(tts_audio, text)
 
     def _collect_adjacent_tts_text(self, first_text: str) -> str:
         first_text = self._normalize_text(first_text)
@@ -1023,6 +1153,7 @@ class AudioEngine:
         merged_text = " ".join(part for part in merged_parts if part).strip()
         if len(merged_parts) > 1:
             self._log(f"TTS continuation merged: {len(merged_parts)} chunks")
+            self._log(f"PLAYBACK merged: {merged_parts[0]} + {merged_parts[1]}")
         return merged_text
 
     def _should_wait_for_tts_continuation(self, text: str) -> bool:
@@ -1106,7 +1237,7 @@ class AudioEngine:
 
         return self.processor.process(chunk)
 
-    def _enqueue_tts_audio(self, audio: np.ndarray) -> None:
+    def _enqueue_tts_audio(self, audio: np.ndarray, text: str = "") -> None:
         session = self.session
         if session is None or not self.running or session.stopping:
             return
@@ -1124,7 +1255,9 @@ class AudioEngine:
         self._trim_output_queue_if_needed(session)
 
         total_frames = audio.shape[0]
+        total_blocks = max(1, (total_frames + self.current_blocksize - 1) // self.current_blocksize)
         offset = 0
+        block_index = 0
 
         while self.running and offset < total_frames:
             session = self.session
@@ -1141,13 +1274,22 @@ class AudioEngine:
                 piece = np.vstack([piece, padding])
 
             try:
-                session.output_queue.put(piece.astype(np.float32, copy=False), timeout=0.2)
+                session.output_queue.put(
+                    (
+                        piece.astype(np.float32, copy=False),
+                        text,
+                        block_index == 0,
+                        block_index == total_blocks - 1,
+                    ),
+                    timeout=0.2,
+                )
             except queue.Full:
                 if not self.running:
                     return
                 continue
 
             offset += self.current_blocksize
+            block_index += 1
 
     def _trim_tts_audio_silence(self, audio: np.ndarray) -> np.ndarray:
         if audio.size == 0:
@@ -1180,7 +1322,7 @@ class AudioEngine:
             if queued_audio_seconds <= self.app_config.tts.max_queue_latency_sec:
                 return
 
-        cleared_blocks = session.clear_output_queue()
+        cleared_blocks = session.clear_output_queue(reason="stale_tts_audio_queue")
         self._log(
             "Dropped stale TTS audio queue "
             f"({queued_audio_seconds:.2f} sec, blocks={cleared_blocks})"
@@ -1247,6 +1389,7 @@ class AudioEngine:
         self._low_latency_emitted_text = ""
         self._low_latency_last_queued_text = ""
         self._low_latency_partial_queued = False
+        self._ru_to_en_recent_partial_text = ""
         self._ru_to_en_last_emitted_at = 0.0
         self._ru_to_en_emitted_phrase_norms = set()
         self._ru_to_en_emitted_phrases = []
@@ -1260,7 +1403,7 @@ class AudioEngine:
         session = self.session
         if session is None:
             return
-        session.clear_output_queue()
+        session.clear_output_queue(reason="reset_output_queue")
 
     def _reset_utterance_state(self) -> None:
         self.last_final_text = ""
@@ -1661,6 +1804,7 @@ class AudioEngine:
         branch_config = self._get_active_branch_config()
         if branch_config.translation_direction == "ru_to_en":
             now = time.monotonic()
+            self._ru_to_en_recent_partial_text = normalized
 
             incremental = self._extract_incremental_text(self._low_latency_emitted_text, normalized)
             incremental = self._normalize_text(incremental)
@@ -1673,8 +1817,21 @@ class AudioEngine:
                 self._expire_ru_to_en_pending_phrase(now)
                 return
 
-            for index, phrase in enumerate(completed_phrases):
+            for phrase in completed_phrases:
                 candidate = self._normalize_text(phrase)
+                normalized_candidate = self._normalize_ru_to_en_source_vocabulary(candidate)
+                if normalized_candidate != candidate:
+                    self._log(f"RU2EN source normalized: {candidate} -> {normalized_candidate}")
+                    candidate = normalized_candidate
+                if self._should_skip_ru_to_en_known_weak_draft(candidate):
+                    self._log(f"LOWLAT skipped known weak draft: {candidate}")
+                    self._reset_ru_to_en_pending_phrase()
+                    continue
+                partial_rewind_match = self._find_ru_to_en_partial_rewind_suffix_match(candidate)
+                if partial_rewind_match:
+                    self._log(f"LOWLAT skipped partial rewind suffix: {candidate} ~= {partial_rewind_match}")
+                    self._reset_ru_to_en_pending_phrase()
+                    continue
                 if self._should_skip_ru_to_en_partial_refinement(candidate):
                     continue
                 if not self._allow_ru_to_en_source_fragment(
@@ -1693,16 +1850,13 @@ class AudioEngine:
                     )
                     self._reset_ru_to_en_pending_phrase()
                     continue
-                early_stable_partial = self._should_early_admit_ru_to_en_partial(candidate)
-                if not early_stable_partial and not self._mark_ru_to_en_partial_phrase_seen(candidate, now):
+                if not self._mark_ru_to_en_partial_phrase_seen(candidate, now):
                     return
 
                 self._ru_to_en_last_emitted_at = now
                 self._remember_ru_to_en_emitted_phrase(candidate)
                 self._low_latency_generation += 1
                 self._low_latency_last_queued_text = candidate
-                if early_stable_partial:
-                    self._log(f"LOWLAT early-stable partial accepted: {candidate}")
                 self._log(f"LOWLAT sentence queued: {candidate}")
                 self._enqueue_low_latency_text(
                     candidate,
@@ -1828,6 +1982,9 @@ class AudioEngine:
                 normalized_sentence = self._prepare_ru_to_en_phrase_for_queue(sentence)
                 if len(normalized_sentence.split()) < phrase_min_words:
                     continue
+                if self._should_skip_ru_to_en_known_weak_draft(normalized_sentence):
+                    self._log(f"LOWLAT skipped known weak draft: {normalized_sentence}")
+                    continue
                 phrase_norm = self._normalize_compare_text(normalized_sentence)
                 source_duplicate_match = self._find_ru_to_en_source_contained_duplicate(normalized_sentence)
                 if (
@@ -1880,32 +2037,35 @@ class AudioEngine:
             trailing_fragment = self._prepare_ru_to_en_phrase_for_queue(trailing_fragment)
             if branch_config.translation_direction == "ru_to_en":
                 if trailing_fragment and len(trailing_fragment.split()) >= phrase_min_words:
-                    trailing_norm = self._normalize_compare_text(trailing_fragment)
-                    last_queued_norm = self._normalize_compare_text(self._low_latency_last_queued_text)
-                    trailing_duplicate_match = self._find_ru_to_en_source_contained_duplicate(trailing_fragment)
-                    if (
-                        trailing_norm
-                        and trailing_norm != last_queued_norm
-                        and trailing_norm not in self._ru_to_en_emitted_phrase_norms
-                        and not trailing_duplicate_match
-                        and not self._should_skip_ru_to_en_overlap_phrase(trailing_fragment)
-                    ):
-                        self._low_latency_generation += 1
-                        self._low_latency_last_queued_text = trailing_fragment
-                        self._ru_to_en_last_emitted_at = time.monotonic()
-                        self._remember_ru_to_en_emitted_phrase(trailing_fragment)
-                        self._log(f"LOWLAT final tail queued: {trailing_fragment}")
-                        self._enqueue_low_latency_text(
-                            trailing_fragment,
-                            is_final=True,
-                            generation=self._low_latency_generation,
-                        )
-                        emitted_any = True
-                    elif trailing_duplicate_match:
-                        self._log(
-                            "LOWLAT skipped source contained duplicate: "
-                            f"{trailing_fragment} ~= {trailing_duplicate_match}"
-                        )
+                    if self._should_skip_ru_to_en_known_weak_draft(trailing_fragment):
+                        self._log(f"LOWLAT skipped known weak draft: {trailing_fragment}")
+                    else:
+                        trailing_norm = self._normalize_compare_text(trailing_fragment)
+                        last_queued_norm = self._normalize_compare_text(self._low_latency_last_queued_text)
+                        trailing_duplicate_match = self._find_ru_to_en_source_contained_duplicate(trailing_fragment)
+                        if (
+                            trailing_norm
+                            and trailing_norm != last_queued_norm
+                            and trailing_norm not in self._ru_to_en_emitted_phrase_norms
+                            and not trailing_duplicate_match
+                            and not self._should_skip_ru_to_en_overlap_phrase(trailing_fragment)
+                        ):
+                            self._low_latency_generation += 1
+                            self._low_latency_last_queued_text = trailing_fragment
+                            self._ru_to_en_last_emitted_at = time.monotonic()
+                            self._remember_ru_to_en_emitted_phrase(trailing_fragment)
+                            self._log(f"LOWLAT final tail queued: {trailing_fragment}")
+                            self._enqueue_low_latency_text(
+                                trailing_fragment,
+                                is_final=True,
+                                generation=self._low_latency_generation,
+                            )
+                            emitted_any = True
+                        elif trailing_duplicate_match:
+                            self._log(
+                                "LOWLAT skipped source contained duplicate: "
+                                f"{trailing_fragment} ~= {trailing_duplicate_match}"
+                            )
             elif trailing_fragment and len(trailing_fragment.split()) >= sentence_min_words:
                 trailing_norm = self._normalize_compare_text(trailing_fragment)
                 last_queued_norm = self._normalize_compare_text(self._low_latency_last_queued_text)
@@ -2439,43 +2599,7 @@ class AudioEngine:
         return True
 
     def _should_early_admit_ru_to_en_partial(self, fragment: str) -> bool:
-        if self._get_active_branch_config().translation_direction != "ru_to_en":
-            return False
-
-        fragment = self._normalize_text(fragment)
-        normalized = self._normalize_compare_text(fragment)
-        if not fragment or not normalized:
-            return False
-
-        words = normalized.split()
-        if len(words) < 4:
-            return False
-
-        suspicious_starters = (
-            "так как",
-            "потому что",
-            "чтобы",
-            "который",
-            "которая",
-            "которое",
-            "которые",
-            "которым",
-            "которую",
-            "то",
-        )
-        for starter in suspicious_starters:
-            if normalized == starter or normalized.startswith(f"{starter} "):
-                return False
-
-        trailing_token = words[-1]
-        if trailing_token in {"в", "на", "для", "с", "по", "от", "из", "и", "но", "или"}:
-            return False
-
-        def looks_like_verb(word: str) -> bool:
-            token = word.strip(".,!?;:").lower()
-            return token.endswith(("ю", "ет", "ит", "ал", "ил"))
-
-        return any(looks_like_verb(word) for word in words)
+        return False
 
     def _mark_ru_to_en_partial_phrase_seen(self, phrase: str, now: float) -> bool:
         phrase = self._normalize_text(phrase)
@@ -2483,7 +2607,16 @@ class AudioEngine:
         if not phrase_norm:
             return False
 
-        stale_after_sec = 0.55
+        previous_last_seen_at = self._ru_to_en_pending_phrase_last_seen_at
+        same_phrase = phrase_norm == self._ru_to_en_pending_phrase_norm
+        gap_since_previous = (
+            now - previous_last_seen_at
+            if same_phrase and previous_last_seen_at > 0.0
+            else None
+        )
+
+        old_stale_after_sec = 0.55
+        stale_after_sec = 0.8
         if (
             phrase_norm != self._ru_to_en_pending_phrase_norm
             or (now - self._ru_to_en_pending_phrase_last_seen_at) > stale_after_sec
@@ -2498,10 +2631,18 @@ class AudioEngine:
 
         self._ru_to_en_pending_phrase_last_seen_at = now
         stable_for = now - self._ru_to_en_pending_phrase_first_seen_at
-        return (
+        admitted = (
             self._ru_to_en_pending_phrase_seen_count >= 2
             or stable_for >= self._get_ru_to_en_partial_phrase_stability_sec(phrase)
         )
+        if (
+            admitted
+            and self._ru_to_en_pending_phrase_seen_count >= 2
+            and gap_since_previous is not None
+            and old_stale_after_sec < gap_since_previous <= stale_after_sec
+        ):
+            self._log(f"LOWLAT phrase_seen relaxed admit: {phrase}")
+        return admitted
 
     def _get_ru_to_en_partial_phrase_stability_sec(self, phrase: str) -> float:
         normalized = self._normalize_compare_text(phrase)
@@ -2523,6 +2664,11 @@ class AudioEngine:
         phrase = self._normalize_text(phrase)
         if not phrase:
             return ""
+
+        normalized_phrase = self._normalize_ru_to_en_source_vocabulary(phrase)
+        if normalized_phrase != phrase:
+            self._log(f"RU2EN source normalized: {phrase} -> {normalized_phrase}")
+            phrase = normalized_phrase
 
         phrase_norm = self._normalize_compare_text(phrase)
         if not phrase_norm:
@@ -2626,6 +2772,7 @@ class AudioEngine:
 
         self._log(f"LOWLAT skipped prepare-born suffix-tail то: {fragment}")
         return True
+
 
     def _allow_ru_to_en_source_fragment(
         self,

@@ -41,6 +41,116 @@
 - [core/audio/audio_engine.py](/media/yaroslav/DATA/Мой%20переводчик/core/audio/audio_engine.py)
 - [core/audio/ru_to_en_stream_controller.py](/media/yaroslav/DATA/Мой%20переводчик/core/audio/ru_to_en_stream_controller.py)
 
+## Accepted Current State 2026-04-30
+
+Текущий лучший live baseline для `RU => EN`: состояние после `speak_ru_to_en(23).log`.
+
+Принято:
+
+- latest live test на `large_simple_text` не показал major duplicate issue;
+- weak draft `это проект для конвертации` теперь корректно пропускается и не озвучивается перед полной фразой;
+- normalization / rewrite fixes приняты:
+  - `пет-проект`;
+  - `лендинги`;
+  - `но ... лимит` -> `но я сталкивался с лимитом`;
+  - `которым активно пользуюсь...` -> `я активно пользуюсь этим...`;
+- `partial rewind suffix suppression` принят как полезная защита от standalone tail artifacts.
+
+Оставшиеся проблемы сейчас относятся в основном к semantic translation quality, а не к duplicate pipeline:
+
+- `так как мой английский слабее уровня комфортного общения` всё ещё может переводиться неестественно;
+- `который помог мне невероятно быстро ускорить работу` может сокращаться до неудачного `The one who helped me incredibly fast.`
+
+Не возвращать отклонённые направления без отдельного решения:
+
+- `early-stable partial`;
+- `LLM / hybrid`;
+- `defer / hold / buffering`;
+- broad filters;
+- `adjacent translated refinement filter`.
+
+Следующая работа должна быть сфокусирована на semantic quality нескольких известных фраз:
+
+- только маленькие deterministic rewrite / normalization шаги;
+- по одной фразе или одному узкому паттерну за итерацию;
+- обязательно benchmark-driven и затем live-validated.
+
+## Current State 2026-04-29
+
+Текущий принятый baseline: `RU=>EN clean baseline v2`.
+
+Состояние baseline:
+
+- `early-stable partial` выключен и не должен возвращаться без отдельного решения.
+- `phrase_seen stale_after_sec = 0.8` остаётся принятым latency/stability компромиссом.
+- Playback-level logs добавлены и полезны для live анализа:
+  - `PLAYBACK queued`
+  - `PLAYBACK started`
+  - `PLAYBACK finished`
+  - `PLAYBACK skipped`
+  - `PLAYBACK merged`
+- `LLM / hybrid` ветка была протестирована отдельно, архивирована и не merge-илась в стабильный baseline.
+- `defer / hold` эксперименты отклонены и удалены.
+- `final-tail filter` отклонён и удалён.
+- `adjacent translated refinement filter` отклонён и удалён.
+
+Текущая принятая стратегия:
+
+- не менять admission / segmentation / TTS;
+- не возвращать hold / defer / merge;
+- улучшать качество через deterministic `RU source normalization / rewrite` перед переводом;
+- изменения должны быть узкими, exact-match, benchmark-driven и проверяться live.
+
+Принятый deterministic rewrite перед translation:
+
+```text
+но упирался то в лимит -> но я сталкивался с лимитом
+но опирался то в лимит -> но я сталкивался с лимитом
+```
+
+Причина принятия:
+
+- live / offline показали более естественный результат:
+  - `But I ran into a limit,`
+- latency и duplicates не ухудшились заметно.
+
+Текущая glossary normalization перед admission / translation:
+
+```text
+перевозчик -> переводчик
+пэт проект -> пет-проект
+педпроект -> пет-проект
+подпроект -> пет-проект   # только если context содержит "еще один" / "ещё один"
+лайтинги -> лендинги
+лейтинги -> лендинги
+лайндинги -> лендинги
+ландинги -> лендинги
+лэндинги -> лендинги
+```
+
+Последний `large_simple_text` benchmark:
+
+```text
+queue_start_delay_sec: 0.80
+tts_ready_start_delay_sec: 3.25
+duplicate_translated_count: 0.00
+long_translation_gaps_count: 6.00
+realtime_factor: 1.07
+```
+
+Оставшиеся проблемы:
+
+- STT instability всё ещё создаёт варианты типа `лейдинги / лайтинги / лендинги`.
+- Остаются causal/dependent fragments вокруг `так как мой английский...`.
+- Некоторые dependent fragments всё ещё переводятся неестественно.
+- Нужен live sanity test после reset состояния приложения.
+
+Следующий рекомендуемый шаг:
+
+1. Сделать live sanity test с текущей normalization / rewrite.
+2. После live теста анализировать только `PLAYBACK started` lines.
+3. Если regressions нет, зафиксировать этот baseline как следующий stable candidate.
+
 ## Benchmark System (RU→EN)
 
 ### 1. Назначение
@@ -257,6 +367,97 @@ recordings/benchmarks/ru_to_en/
 2. Offline benchmark используется как safety check, но не как единственный критерий качества.
 
 ### Rules For Future Changes
+
+## LLM Experiment Archive
+
+### Branch / Git State
+
+- Стабильный baseline был сохранён без принятия LLM-экспериментов в основную рабочую ветку.
+- Ветка `experiment/llm-translation` тестировалась отдельно как исследовательская.
+- Экспериментальная ветка была сохранена в истории как архив исследования.
+- После завершения тестов работа продолжена снова из исходного stable baseline branch.
+- Qwen model files после завершения эксперимента были удалены из `/media/yaroslav/DATA/ai_models`.
+
+### What Was Tested
+
+Тестировался hybrid `RU=>EN` backend:
+
+- `MarianMT` как default fast backend;
+- optional local LLM только для dependent fragments.
+
+Проверенные варианты:
+
+- full transformers `Qwen2.5-1.5B-Instruct`;
+- full transformers `Qwen2.5-7B-Instruct`;
+- quantized `Qwen2.5-7B-Instruct` GGUF через `llama.cpp / llama-cpp-python`.
+
+### Results
+
+- `Qwen2.5-1.5B-Instruct` технически работал, но качество перевода оказалось слишком слабым.
+- full transformers `Qwen2.5-7B-Instruct` давал лучшее качество, но вызывал проблемы по `VRAM / OOM` в live runtime.
+- В экспериментальной ветке был исправлен lifecycle bug:
+  - shared singleton;
+  - preload;
+  - reuse;
+  - без per-fragment model reload.
+- Quantized GGUF `7B` успешно загружался и работал без `fallback / OOM`.
+- В live logs действительно появлялись:
+  - `HYBRID translation route: llm`
+  - `HYBRID llm translation result`
+
+### Key Conclusion
+
+Ключевой итог эксперимента:
+
+- LLM backend технически заработал после перехода на quantized backend.
+- Но live quality всё равно оставалась плохой.
+- Главная оставшаяся проблема находится не в качестве translation model как таковой.
+- Главная проблема находится выше по pipeline:
+  - source fragmentation;
+  - admission;
+  - semantic duplicate / refinement emissions.
+- Плохие или нестабильные русские source fragments попадают в `LOWLAT sentence queued` ещё до перевода.
+- LLM не может надёжно исправить плохой source stream без `context / hold / merge`.
+
+### Problematic Live Behaviors
+
+Типовые проблемные live cases:
+
+- draft partial emitted too early:
+  - `Я его создал.`
+  - затем позже `Я его создал для помощи...`
+- bad STT / refinement fragment:
+  - `так как мой английский язык не использовал`
+- repeated / refined semantic fragments вокруг:
+  - `но упирался то в лимит, то в отсутствие гибкости`
+- final cleanup всё ещё мог выпускать лишний refined-content:
+  - `мы активно пользуюсь до сих пор`
+
+### Decision
+
+По итогам эксперимента:
+
+- не merge-ить LLM experiment в stable baseline;
+- не продолжать LLM model work как основное направление прямо сейчас;
+- сохранить hybrid experiment только как archived research;
+- текущий принятый вектор:
+  - улучшать source stream quality;
+  - segmentation / admission;
+  - semantic duplicate / refinement handling.
+
+Дополнительные ограничения:
+
+- избегать `hold/merge`, если они не введены под очень жёстким контролем;
+- не возвращать `early-stable partial`.
+
+### Next Recommended Work
+
+Следующая сессия должна начинаться с analysis-only задачи:
+
+1. Inspect stable baseline live logs.
+2. Точно определить, почему semantic duplicate / refinement source fragments проходят в `LOWLAT sentence queued`.
+3. Предложить одно маленькое benchmark-driven исправление.
+4. Без model changes.
 
 Любые будущие изменения:
 
