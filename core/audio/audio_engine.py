@@ -40,12 +40,57 @@ from core.tts.tts_service import TTSService, TTSConfig
 
 
 class AudioEngine:
+    _RU_TO_EN_DEPENDENT_SUFFIX_ADMISSION_FILTER_ENABLED = False
+    _RU_TO_EN_CONTEXT_SENSITIVE_STARTERS = (
+        "как",
+        "чтобы",
+        "то",
+        "который",
+        "которая",
+        "которое",
+        "которые",
+        "которым",
+        "которую",
+    )
     _KNOWN_STANDALONE_STT_HALLUCINATIONS = frozenset({
         "продолжение следует",
     })
     _KNOWN_EN_STANDALONE_STT_HALLUCINATIONS = frozenset({
         "welcome to the american league of legends",
     })
+    _TTS_CONTINUATION_LEADERS = frozenset({
+        "when",
+        "because",
+        "since",
+        "if",
+        "and",
+        "but",
+    })
+    _RU_TO_EN_FINAL_CLEANUP_STOPWORDS = frozenset({
+        "я", "ты", "он", "она", "оно", "они", "мы", "вы",
+        "это", "эт", "эта", "эти", "как", "что", "в", "во", "на",
+        "и", "но", "а", "то", "так", "потому", "если", "когда",
+        "мой", "моя", "мои", "его", "ее", "её", "их", "наш", "наша",
+        "наши", "ваш", "ваша", "ваши", "для", "через", "у", "из",
+        "по", "к", "ко", "с", "со", "до", "или", "же", "ли", "нет",
+        "есть", "меня", "мне", "его", "ее", "её", "свой",
+    })
+    _RU_TO_EN_FINAL_CLEANUP_SUFFIXES = (
+        "аются", "яются", "ились", "ались",
+        "ывать", "ивать", "овать", "ировать",
+        "аться", "яться", "иться", "еться", "нуть",
+        "аешь", "яешь", "аете", "яете", "ают", "яют",
+        "уешь", "уете", "уют", "ишь", "ите", "им", "ит", "ят", "ют",
+        "ался", "ялся", "илась", "илось", "ались", "ялись",
+        "ал", "ала", "ало", "али", "ял", "яла", "яло", "яли",
+        "аю", "яю", "ую", "ешь", "ете", "ем", "ут", "ют",
+        "ить", "ать", "ять", "еть", "оть", "уть", "ти",
+        "иями", "ями", "ами", "его", "ого", "ему", "ому", "ыми", "ими",
+        "иях", "ах", "ях", "ия", "ья", "ие", "ье", "ий", "ый", "ой",
+        "ая", "яя", "ое", "ее", "ую", "ом", "ем", "ам", "ям",
+        "ов", "ев", "ей", "иям", "ием",
+        "а", "я", "ы", "и", "е", "о", "у", "ю", "ь",
+    )
 
     def __init__(
         self,
@@ -89,6 +134,10 @@ class AudioEngine:
         self.last_enqueued_final_text: str = ""
         self.last_emitted_source_text: str = ""
         self.last_translated_at: float = 0.0
+        self._recent_translated_compare_norms: list[str] = []
+        self._recent_translated_texts: list[str] = []
+        self._recent_translated_source_texts: list[str] = []
+        self._tts_ready_chunks_count: int = 0
         self._last_stt_activity_at: float = 0.0
 
         self.final_text_queue: queue.Queue[str] = queue.Queue(maxsize=32)
@@ -121,9 +170,11 @@ class AudioEngine:
         self._low_latency_last_queued_text = ""
         self._low_latency_partial_queued = False
         self._low_latency_deferred_partial_text = ""
+        self._ru_to_en_recent_partial_text = ""
         self._ru_to_en_last_emitted_at: float = 0.0
         self._ru_to_en_emitted_phrase_norms: set[str] = set()
         self._ru_to_en_emitted_phrases: list[str] = []
+        self._ru_to_en_finalized_phrase_count: int = 0
         self._ru_to_en_pending_phrase_text: str = ""
         self._ru_to_en_pending_phrase_norm: str = ""
         self._ru_to_en_pending_phrase_seen_count: int = 0
@@ -175,6 +226,10 @@ class AudioEngine:
         self.last_enqueued_final_text = ""
         self.last_emitted_source_text = ""
         self.last_translated_at = 0.0
+        self._recent_translated_compare_norms = []
+        self._recent_translated_texts = []
+        self._recent_translated_source_texts = []
+        self._tts_ready_chunks_count = 0
         self._last_stt_activity_at = 0.0
         self._clear_final_text_queue()
         self._clear_low_latency_queue()
@@ -253,6 +308,11 @@ class AudioEngine:
 
         self.session = AudioSession(config)
         self.session.on_error = self._handle_error
+        self.session.on_playback_started = lambda text: self._log(f"PLAYBACK started: {text}")
+        self.session.on_playback_finished = lambda text: self._log(f"PLAYBACK finished: {text}")
+        self.session.on_playback_skipped = (
+            lambda text, reason: self._log(f"PLAYBACK skipped: {text} reason={reason}")
+        )
         self.session.start()
 
         log_audio_routing_snapshot(self._log)
@@ -336,6 +396,18 @@ class AudioEngine:
             except Exception as error:
                 self._handle_error(f"Realtime STT stop error: {error}")
 
+        if hasattr(self.translation_service, "stop"):
+            try:
+                self.translation_service.stop()
+            except Exception as error:
+                self._handle_error(f"Translation service stop error: {error}")
+
+        if hasattr(self.tts_service, "stop"):
+            try:
+                self.tts_service.stop()
+            except Exception as error:
+                self._handle_error(f"TTS service stop error: {error}")
+
         if session is not None:
             session.stop()
 
@@ -359,6 +431,9 @@ class AudioEngine:
         self.last_enqueued_final_text = ""
         self.last_emitted_source_text = ""
         self.last_translated_at = 0.0
+        self._recent_translated_compare_norms = []
+        self._recent_translated_texts = []
+        self._recent_translated_source_texts = []
         self._last_stt_activity_at = 0.0
         self._clear_final_text_queue()
         self._clear_low_latency_queue()
@@ -572,7 +647,10 @@ class AudioEngine:
 
         if self._uses_low_latency_direct_pipeline():
             self.last_final_text = text
-            self._log(f"FINAL: {text}")
+            if self._get_active_branch_config().translation_direction == "ru_to_en":
+                self._log(f"FINAL raw: {text}")
+            else:
+                self._log(f"FINAL: {text}")
             self._handle_low_latency_final(text)
             return
 
@@ -691,7 +769,10 @@ class AudioEngine:
 
             translation_started_at = time.perf_counter()
             try:
-                translated_text = translation_service.translate(text)
+                translated_text = self._translate_ru_to_en_with_optional_context(
+                    translation_service,
+                    text,
+                )
             except Exception as error:
                 self._handle_error(f"Translation error: {error}")
                 return
@@ -705,14 +786,273 @@ class AudioEngine:
             self._log("TRANSLATED: <empty>")
             return
 
+        if self._try_replace_pending_translated_duplicate(translated_text):
+            self.last_translated_text = translated_text
+            self.last_translated_at = time.monotonic()
+            self._log("TRANSLATED replaced pending duplicate")
+            return
+
+        same_prefix_retry_match = self._find_same_prefix_translated_retry(translated_text)
+        if same_prefix_retry_match:
+            self.last_translated_text = translated_text
+            self.last_translated_at = time.monotonic()
+            self._log(f"TRANSLATED skipped same-prefix retry: {translated_text} ~= {same_prefix_retry_match}")
+            return
+
         if self._should_skip_translated_text(translated_text):
             self._log("TRANSLATED skipped: duplicate")
             return
 
+        if self._should_skip_strict_short_translated_fragment(text, translated_text):
+            self._log(f"TRANSLATED skipped short low-confidence fragment: {translated_text}")
+            return
+
         self.last_translated_text = translated_text
         self.last_translated_at = time.monotonic()
+        self._remember_translated_text_for_compare(translated_text)
+        self._remember_translated_source_text_for_compare(text)
         self._log(f"TRANSLATED: {translated_text}")
         self._enqueue_tts_text(translated_text)
+
+    def _translate_ru_to_en_with_optional_context(
+        self,
+        translation_service: TranslationService,
+        text: str,
+    ) -> str:
+        branch_config = self._get_active_branch_config()
+        if branch_config.translation_direction != "ru_to_en":
+            return translation_service.translate(text)
+
+        rewritten_text = self._rewrite_ru_to_en_source_before_translation(text)
+        if rewritten_text != self._normalize_text(text):
+            self._log(
+                "RU2EN source rewrite before translation: "
+                f"{self._normalize_text(text)} -> {rewritten_text}"
+            )
+            text = rewritten_text
+
+        if not self.app_config.translation.ru_to_en_context_aware_translation_enabled:
+            return translation_service.translate(text)
+
+        current_text = self._normalize_text(text)
+        if not self._should_use_ru_to_en_translation_context(current_text):
+            return translation_service.translate(current_text)
+
+        context_text = self._get_ru_to_en_translation_context(current_text)
+        if not context_text:
+            return translation_service.translate(current_text)
+
+        self._log(
+            "RU2EN context translation used:\n"
+            f"CONTEXT: {context_text}\n"
+            f"CURRENT: {current_text}"
+        )
+
+        combined_source = self._normalize_text(f"{context_text} {current_text}")
+        combined_translated = self._normalize_text(translation_service.translate(combined_source))
+        previous_translated = self._normalize_text(self.last_translated_text)
+        contextual_tail = self._normalize_text(
+            self._extract_incremental_text(previous_translated, combined_translated)
+        )
+        if contextual_tail:
+            self._log(f"RU2EN context translated output: {contextual_tail}")
+            return contextual_tail
+
+        self._log("RU2EN context translation fallback: incremental tail empty")
+        return combined_translated
+
+    def _rewrite_ru_to_en_source_before_translation(self, text: str) -> str:
+        source_text = self._normalize_text(text)
+        normalized = self._normalize_compare_text(source_text)
+        if not normalized:
+            return source_text
+
+        if normalized.startswith("но упирался то в лимит") or normalized.startswith("но опирался то в лимит"):
+            return self._normalize_text(
+                re.sub(
+                    r"^но\s+(?:у|о)пирался\s+то\s+в\s+лимит\b",
+                    "но я сталкивался с лимитом",
+                    source_text,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+            )
+
+        if normalized.startswith("упирался то в лимит") or normalized.startswith("опирался то в лимит"):
+            return self._normalize_text(
+                re.sub(
+                    r"^(?:у|о)пирался\s+то\s+в\s+лимит\b",
+                    "я сталкивался с лимитом",
+                    source_text,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+            )
+
+        words = normalized.split()
+        if len(words) > 7:
+            return source_text
+        if "я" in words:
+            return source_text
+        if not words or words[0] != "которым" or "пользуюсь" not in words:
+            return source_text
+
+        raw_words = source_text.split()
+        if not raw_words:
+            return source_text
+
+        tail_words = raw_words[1:]
+        if not tail_words:
+            return source_text
+
+        rewritten_words = ["я"]
+        inserted_object = False
+        for raw_word in tail_words:
+            if not inserted_object and raw_word.strip(".,!?;:").lower() == "пользуюсь":
+                base_word = raw_word.rstrip(".,!?;:")
+                punctuation = raw_word[len(base_word):]
+                rewritten_words.append(base_word)
+                rewritten_words.append(f"этим{punctuation}")
+                inserted_object = True
+                continue
+            rewritten_words.append(raw_word)
+
+        if not inserted_object:
+            return source_text
+
+        return self._normalize_text(" ".join(rewritten_words))
+
+    def _normalize_ru_to_en_source_vocabulary(self, text: str) -> str:
+        source_text = self._normalize_text(text)
+        if not source_text:
+            return source_text
+
+        normalized = self._normalize_compare_text(source_text)
+        replacements = (
+            (r"\bперевозчик\b", "переводчик"),
+            (r"\bпэт\s+проект\b", "пет-проект"),
+            (r"\bпедпроект\b", "пет-проект"),
+            (r"\bлайтинги\b", "лендинги"),
+            (r"\bлейтинги\b", "лендинги"),
+            (r"\bлейдинги\b", "лендинги"),
+            (r"\bлейдингов\b", "лендингов"),
+            (r"\bлайндинги\b", "лендинги"),
+            (r"\bландинги\b", "лендинги"),
+            (r"\bлэндинги\b", "лендинги"),
+        )
+
+        result = source_text
+        for pattern, replacement in replacements:
+            result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+
+        if "еще один" in normalized or "ещё один" in normalized:
+            result = re.sub(r"\bподпроект\b", "пет-проект", result, flags=re.IGNORECASE)
+
+        return self._normalize_text(result)
+
+    def _should_skip_ru_to_en_known_weak_draft(self, text: str) -> bool:
+        return self._normalize_compare_text(text) in {
+            "сначала я пользовался бесплатным",
+            "это проект для конвертации",
+        }
+
+    def _find_ru_to_en_partial_rewind_suffix_match(self, candidate: str) -> str:
+        candidate_text = self._normalize_text(candidate)
+        candidate_norm = self._normalize_compare_text(candidate_text)
+        recent_partial = self._normalize_text(self._ru_to_en_recent_partial_text)
+        recent_partial_norm = self._normalize_compare_text(recent_partial)
+        if not candidate_norm or not recent_partial_norm:
+            return ""
+
+        candidate_words = candidate_norm.split()
+        if not 3 <= len(candidate_words) <= 5:
+            return ""
+
+        standalone_starters = {
+            "я",
+            "мне",
+            "сейчас",
+            "также",
+            "когда",
+            "сначала",
+            "это",
+            "но",
+            "то",
+            "который",
+            "которая",
+            "которое",
+            "которые",
+            "которым",
+            "которую",
+        }
+        first_word = candidate_words[0]
+        if first_word in standalone_starters or candidate_norm.startswith("так как "):
+            return ""
+
+        candidate_index = recent_partial_norm.find(candidate_norm)
+        if candidate_index < 0:
+            return ""
+
+        for emitted_phrase in reversed(self._ru_to_en_emitted_phrases[-5:]):
+            emitted_norm = self._normalize_compare_text(emitted_phrase)
+            emitted_words = emitted_norm.split()
+            if len(emitted_words) < 3:
+                continue
+
+            emitted_index = recent_partial_norm.find(emitted_norm)
+            if emitted_index < 0 and recent_partial_norm.startswith(emitted_norm):
+                emitted_index = 0
+            if emitted_index < 0:
+                continue
+
+            last_word = emitted_words[-1]
+            last_word_start = emitted_norm.rfind(last_word)
+            if last_word_start < 0:
+                continue
+
+            tail_boundary = emitted_index + last_word_start
+            if candidate_index < tail_boundary:
+                continue
+
+            if len(first_word) <= 2 or first_word.startswith(last_word):
+                return recent_partial
+
+        return ""
+
+    def _should_use_ru_to_en_translation_context(self, text: str) -> bool:
+        normalized = self._normalize_compare_text(text)
+        if not normalized:
+            return False
+
+        words = normalized.split()
+        if len(words) > 6:
+            return False
+
+        for starter in self._RU_TO_EN_CONTEXT_SENSITIVE_STARTERS:
+            if normalized == starter or normalized.startswith(f"{starter} "):
+                return True
+        return False
+
+    def _get_ru_to_en_translation_context(self, current_text: str) -> str:
+        current_norm = self._normalize_compare_text(current_text)
+        if not current_norm:
+            return ""
+
+        skipped_current = False
+        for previous_text in reversed(self._ru_to_en_emitted_phrases):
+            previous_norm = self._normalize_compare_text(previous_text)
+            if not previous_norm:
+                continue
+            if not skipped_current and previous_norm == current_norm:
+                skipped_current = True
+                continue
+
+            context_words = self._normalize_text(previous_text).split()
+            if not context_words:
+                return ""
+            return " ".join(context_words[-12:]).strip()
+
+        return ""
 
     def _enqueue_tts_text(self, text: str) -> None:
         if not self.running or self._translation_paused:
@@ -764,16 +1104,22 @@ class AudioEngine:
                 else 0.0
             )
             self._log(f"TTS audio ready: {duration:.2f} sec")
-            self._enqueue_tts_audio(tts_audio)
+            self._tts_ready_chunks_count += 1
+            self._log(f"PLAYBACK queued: {text}")
+            self._enqueue_tts_audio(tts_audio, text)
 
     def _collect_adjacent_tts_text(self, first_text: str) -> str:
-        merged_parts = [self._normalize_text(first_text)]
-        if not merged_parts[0]:
+        first_text = self._normalize_text(first_text)
+        if not first_text:
             return ""
 
+        if not self._should_wait_for_tts_continuation(first_text):
+            return first_text
+
+        merged_parts = [first_text]
         started_at = time.monotonic()
-        max_wait_sec = 0.06
-        max_parts = 3
+        max_wait_sec = 0.24
+        max_parts = 2
         max_chars = 160
 
         while len(merged_parts) < max_parts and (time.monotonic() - started_at) < max_wait_sec:
@@ -787,6 +1133,13 @@ class AudioEngine:
             if not next_text:
                 continue
 
+            if not self._should_merge_tts_continuation(merged_parts[0], next_text):
+                try:
+                    self.tts_text_queue.put_nowait((next_text, self.current_samplerate))
+                except queue.Full:
+                    self._handle_error("TTS text queue is full, dropping deferred chunk")
+                break
+
             candidate = " ".join(merged_parts + [next_text]).strip()
             if len(candidate) > max_chars:
                 try:
@@ -799,8 +1152,78 @@ class AudioEngine:
 
         merged_text = " ".join(part for part in merged_parts if part).strip()
         if len(merged_parts) > 1:
-            self._log(f"TTS merged batch: {len(merged_parts)} chunks")
+            self._log(f"TTS continuation merged: {len(merged_parts)} chunks")
+            self._log(f"PLAYBACK merged: {merged_parts[0]} + {merged_parts[1]}")
         return merged_text
+
+    def _should_wait_for_tts_continuation(self, text: str) -> bool:
+        if self._tts_ready_chunks_count == 0:
+            return False
+
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return False
+
+        if len(normalized) > 90 or len(normalized.split()) > 10:
+            return False
+
+        if normalized.endswith(","):
+            return True
+
+        first_word = normalized.split()[0].lower()
+        if first_word in self._TTS_CONTINUATION_LEADERS:
+            return True
+
+        return self._looks_like_incomplete_english_thought(normalized)
+
+    def _should_merge_tts_continuation(self, first_text: str, next_text: str) -> bool:
+        first = self._normalize_text(first_text)
+        second = self._normalize_text(next_text)
+        if not first or not second:
+            return False
+
+        if self._looks_like_complete_english_sentence(first):
+            return False
+
+        if len(second) > 120 or len(second.split()) > 14:
+            return False
+
+        second_first_word = second.split()[0].lower()
+        if second_first_word in self._TTS_CONTINUATION_LEADERS and not second.startswith("I "):
+            return False
+
+        combined = f"{first} {second}".strip()
+        if len(combined) > 160:
+            return False
+
+        return True
+
+    @classmethod
+    def _looks_like_complete_english_sentence(cls, text: str) -> bool:
+        normalized = cls._normalize_text(text)
+        if not normalized:
+            return False
+        return normalized.endswith((".", "!", "?"))
+
+    @classmethod
+    def _looks_like_incomplete_english_thought(cls, text: str) -> bool:
+        normalized = cls._normalize_text(text)
+        if not normalized or cls._looks_like_complete_english_sentence(normalized):
+            return False
+
+        words = normalized.split()
+        if not words:
+            return False
+
+        first_word = words[0].lower()
+        if first_word in cls._TTS_CONTINUATION_LEADERS:
+            return True
+
+        if len(words) <= 4:
+            return True
+
+        trailing_word = words[-1].lower().strip(",")
+        return trailing_word in {"and", "but", "because", "since", "if", "when", "that"}
 
     def _should_output_processed_audio(self) -> bool:
         if self.processor is None:
@@ -814,7 +1237,7 @@ class AudioEngine:
 
         return self.processor.process(chunk)
 
-    def _enqueue_tts_audio(self, audio: np.ndarray) -> None:
+    def _enqueue_tts_audio(self, audio: np.ndarray, text: str = "") -> None:
         session = self.session
         if session is None or not self.running or session.stopping:
             return
@@ -832,7 +1255,9 @@ class AudioEngine:
         self._trim_output_queue_if_needed(session)
 
         total_frames = audio.shape[0]
+        total_blocks = max(1, (total_frames + self.current_blocksize - 1) // self.current_blocksize)
         offset = 0
+        block_index = 0
 
         while self.running and offset < total_frames:
             session = self.session
@@ -849,13 +1274,22 @@ class AudioEngine:
                 piece = np.vstack([piece, padding])
 
             try:
-                session.output_queue.put(piece.astype(np.float32, copy=False), timeout=0.2)
+                session.output_queue.put(
+                    (
+                        piece.astype(np.float32, copy=False),
+                        text,
+                        block_index == 0,
+                        block_index == total_blocks - 1,
+                    ),
+                    timeout=0.2,
+                )
             except queue.Full:
                 if not self.running:
                     return
                 continue
 
             offset += self.current_blocksize
+            block_index += 1
 
     def _trim_tts_audio_silence(self, audio: np.ndarray) -> np.ndarray:
         if audio.size == 0:
@@ -888,7 +1322,7 @@ class AudioEngine:
             if queued_audio_seconds <= self.app_config.tts.max_queue_latency_sec:
                 return
 
-        cleared_blocks = session.clear_output_queue()
+        cleared_blocks = session.clear_output_queue(reason="stale_tts_audio_queue")
         self._log(
             "Dropped stale TTS audio queue "
             f"({queued_audio_seconds:.2f} sec, blocks={cleared_blocks})"
@@ -955,9 +1389,11 @@ class AudioEngine:
         self._low_latency_emitted_text = ""
         self._low_latency_last_queued_text = ""
         self._low_latency_partial_queued = False
+        self._ru_to_en_recent_partial_text = ""
         self._ru_to_en_last_emitted_at = 0.0
         self._ru_to_en_emitted_phrase_norms = set()
         self._ru_to_en_emitted_phrases = []
+        self._ru_to_en_finalized_phrase_count = 0
         self._reset_ru_to_en_pending_phrase()
         with self._utterance_audio_lock:
             self._utterance_audio_chunks = []
@@ -967,12 +1403,15 @@ class AudioEngine:
         session = self.session
         if session is None:
             return
-        session.clear_output_queue()
+        session.clear_output_queue(reason="reset_output_queue")
 
     def _reset_utterance_state(self) -> None:
         self.last_final_text = ""
         self.last_enqueued_final_text = ""
         self.last_emitted_source_text = ""
+        self._recent_translated_compare_norms = []
+        self._recent_translated_texts = []
+        self._recent_translated_source_texts = []
         self._clear_pending_final()
         self._clear_partial_state()
         if self.sentence_segmenter is not None:
@@ -1365,6 +1804,7 @@ class AudioEngine:
         branch_config = self._get_active_branch_config()
         if branch_config.translation_direction == "ru_to_en":
             now = time.monotonic()
+            self._ru_to_en_recent_partial_text = normalized
 
             incremental = self._extract_incremental_text(self._low_latency_emitted_text, normalized)
             incremental = self._normalize_text(incremental)
@@ -1379,14 +1819,42 @@ class AudioEngine:
 
             for phrase in completed_phrases:
                 candidate = self._normalize_text(phrase)
+                normalized_candidate = self._normalize_ru_to_en_source_vocabulary(candidate)
+                if normalized_candidate != candidate:
+                    self._log(f"RU2EN source normalized: {candidate} -> {normalized_candidate}")
+                    candidate = normalized_candidate
+                if self._should_skip_ru_to_en_known_weak_draft(candidate):
+                    self._log(f"LOWLAT skipped known weak draft: {candidate}")
+                    self._reset_ru_to_en_pending_phrase()
+                    continue
+                partial_rewind_match = self._find_ru_to_en_partial_rewind_suffix_match(candidate)
+                if partial_rewind_match:
+                    self._log(f"LOWLAT skipped partial rewind suffix: {candidate} ~= {partial_rewind_match}")
+                    self._reset_ru_to_en_pending_phrase()
+                    continue
+                if self._should_skip_ru_to_en_partial_refinement(candidate):
+                    continue
+                if not self._allow_ru_to_en_source_fragment(
+                    candidate,
+                    source_context="",
+                    is_suffix_extracted=False,
+                ):
+                    continue
                 if not self._should_emit_ru_to_en_partial_phrase(candidate):
+                    continue
+                source_duplicate_match = self._find_ru_to_en_source_contained_duplicate(candidate)
+                if source_duplicate_match:
+                    self._log(
+                        "LOWLAT skipped source contained duplicate: "
+                        f"{candidate} ~= {source_duplicate_match}"
+                    )
+                    self._reset_ru_to_en_pending_phrase()
                     continue
                 if not self._mark_ru_to_en_partial_phrase_seen(candidate, now):
                     return
 
-                candidate_norm = self._normalize_compare_text(candidate)
                 self._ru_to_en_last_emitted_at = now
-                self._ru_to_en_emitted_phrase_norms.add(candidate_norm)
+                self._remember_ru_to_en_emitted_phrase(candidate)
                 self._low_latency_generation += 1
                 self._low_latency_last_queued_text = candidate
                 self._log(f"LOWLAT sentence queued: {candidate}")
@@ -1465,6 +1933,7 @@ class AudioEngine:
             # RU=>EN: flush remaining tail of the utterance.
             self._reset_ru_to_en_pending_phrase()
             self._enqueue_low_latency_sentence_stream_segments(final_text, is_final=True, force=True)
+            self._log_ru_to_en_finalized_segments()
             return
 
         incremental = self._extract_incremental_text(self._get_low_latency_incremental_anchor(), final_text)
@@ -1508,16 +1977,27 @@ class AudioEngine:
             # RU=>EN: faster-whisper partials are unstable and can rewrite earlier text.
             # Using a simple index causes us to "miss" newly-appearing phrases.
             # Emit any phrase we haven't emitted yet (dedup by normalized phrase).
-            for sentence in completed_sentences:
+            for index, sentence in enumerate(completed_sentences):
+                previous_sentence = completed_sentences[index - 1] if index > 0 else ""
                 normalized_sentence = self._prepare_ru_to_en_phrase_for_queue(sentence)
                 if len(normalized_sentence.split()) < phrase_min_words:
                     continue
+                if self._should_skip_ru_to_en_known_weak_draft(normalized_sentence):
+                    self._log(f"LOWLAT skipped known weak draft: {normalized_sentence}")
+                    continue
                 phrase_norm = self._normalize_compare_text(normalized_sentence)
+                source_duplicate_match = self._find_ru_to_en_source_contained_duplicate(normalized_sentence)
                 if (
                     not phrase_norm
                     or phrase_norm in self._ru_to_en_emitted_phrase_norms
+                    or source_duplicate_match
                     or self._should_skip_ru_to_en_overlap_phrase(normalized_sentence)
                 ):
+                    if source_duplicate_match:
+                        self._log(
+                            "LOWLAT skipped source contained duplicate: "
+                            f"{normalized_sentence} ~= {source_duplicate_match}"
+                        )
                     continue
 
                 now = time.monotonic()
@@ -1557,25 +2037,35 @@ class AudioEngine:
             trailing_fragment = self._prepare_ru_to_en_phrase_for_queue(trailing_fragment)
             if branch_config.translation_direction == "ru_to_en":
                 if trailing_fragment and len(trailing_fragment.split()) >= phrase_min_words:
-                    trailing_norm = self._normalize_compare_text(trailing_fragment)
-                    last_queued_norm = self._normalize_compare_text(self._low_latency_last_queued_text)
-                    if (
-                        trailing_norm
-                        and trailing_norm != last_queued_norm
-                        and trailing_norm not in self._ru_to_en_emitted_phrase_norms
-                        and not self._should_skip_ru_to_en_overlap_phrase(trailing_fragment)
-                    ):
-                        self._low_latency_generation += 1
-                        self._low_latency_last_queued_text = trailing_fragment
-                        self._ru_to_en_last_emitted_at = time.monotonic()
-                        self._remember_ru_to_en_emitted_phrase(trailing_fragment)
-                        self._log(f"LOWLAT final tail queued: {trailing_fragment}")
-                        self._enqueue_low_latency_text(
-                            trailing_fragment,
-                            is_final=True,
-                            generation=self._low_latency_generation,
-                        )
-                        emitted_any = True
+                    if self._should_skip_ru_to_en_known_weak_draft(trailing_fragment):
+                        self._log(f"LOWLAT skipped known weak draft: {trailing_fragment}")
+                    else:
+                        trailing_norm = self._normalize_compare_text(trailing_fragment)
+                        last_queued_norm = self._normalize_compare_text(self._low_latency_last_queued_text)
+                        trailing_duplicate_match = self._find_ru_to_en_source_contained_duplicate(trailing_fragment)
+                        if (
+                            trailing_norm
+                            and trailing_norm != last_queued_norm
+                            and trailing_norm not in self._ru_to_en_emitted_phrase_norms
+                            and not trailing_duplicate_match
+                            and not self._should_skip_ru_to_en_overlap_phrase(trailing_fragment)
+                        ):
+                            self._low_latency_generation += 1
+                            self._low_latency_last_queued_text = trailing_fragment
+                            self._ru_to_en_last_emitted_at = time.monotonic()
+                            self._remember_ru_to_en_emitted_phrase(trailing_fragment)
+                            self._log(f"LOWLAT final tail queued: {trailing_fragment}")
+                            self._enqueue_low_latency_text(
+                                trailing_fragment,
+                                is_final=True,
+                                generation=self._low_latency_generation,
+                            )
+                            emitted_any = True
+                        elif trailing_duplicate_match:
+                            self._log(
+                                "LOWLAT skipped source contained duplicate: "
+                                f"{trailing_fragment} ~= {trailing_duplicate_match}"
+                            )
             elif trailing_fragment and len(trailing_fragment.split()) >= sentence_min_words:
                 trailing_norm = self._normalize_compare_text(trailing_fragment)
                 last_queued_norm = self._normalize_compare_text(self._low_latency_last_queued_text)
@@ -2076,13 +2566,57 @@ class AudioEngine:
 
         return True
 
+    def _should_skip_ru_to_en_partial_refinement(self, current_source: str) -> bool:
+        if self._get_active_branch_config().translation_direction != "ru_to_en":
+            return False
+
+        current_source = self._normalize_text(current_source)
+        previous_source = self._normalize_text(self._low_latency_last_queued_text)
+        if not current_source or not previous_source:
+            return False
+
+        if current_source.endswith((".", "!", "?")):
+            return False
+
+        current_norm = self._normalize_compare_text(current_source).strip(".,!?;: ")
+        previous_norm = self._normalize_compare_text(previous_source).strip(".,!?;: ")
+        if not current_norm or not previous_norm or current_norm == previous_norm:
+            return False
+
+        prefix = f"{previous_norm} "
+        if not current_norm.startswith(prefix):
+            return False
+
+        suffix = current_norm[len(prefix):].strip()
+        if not suffix:
+            return False
+
+        delta_words = suffix.split()
+        if not 1 <= len(delta_words) <= 2:
+            return False
+
+        self._log(f"LOWLAT skipped partial refinement: {previous_source} -> {current_source}")
+        return True
+
+    def _should_early_admit_ru_to_en_partial(self, fragment: str) -> bool:
+        return False
+
     def _mark_ru_to_en_partial_phrase_seen(self, phrase: str, now: float) -> bool:
         phrase = self._normalize_text(phrase)
         phrase_norm = self._normalize_compare_text(phrase)
         if not phrase_norm:
             return False
 
-        stale_after_sec = 0.55
+        previous_last_seen_at = self._ru_to_en_pending_phrase_last_seen_at
+        same_phrase = phrase_norm == self._ru_to_en_pending_phrase_norm
+        gap_since_previous = (
+            now - previous_last_seen_at
+            if same_phrase and previous_last_seen_at > 0.0
+            else None
+        )
+
+        old_stale_after_sec = 0.55
+        stale_after_sec = 0.8
         if (
             phrase_norm != self._ru_to_en_pending_phrase_norm
             or (now - self._ru_to_en_pending_phrase_last_seen_at) > stale_after_sec
@@ -2097,10 +2631,18 @@ class AudioEngine:
 
         self._ru_to_en_pending_phrase_last_seen_at = now
         stable_for = now - self._ru_to_en_pending_phrase_first_seen_at
-        return (
+        admitted = (
             self._ru_to_en_pending_phrase_seen_count >= 2
             or stable_for >= self._get_ru_to_en_partial_phrase_stability_sec(phrase)
         )
+        if (
+            admitted
+            and self._ru_to_en_pending_phrase_seen_count >= 2
+            and gap_since_previous is not None
+            and old_stale_after_sec < gap_since_previous <= stale_after_sec
+        ):
+            self._log(f"LOWLAT phrase_seen relaxed admit: {phrase}")
+        return admitted
 
     def _get_ru_to_en_partial_phrase_stability_sec(self, phrase: str) -> float:
         normalized = self._normalize_compare_text(phrase)
@@ -2123,6 +2665,11 @@ class AudioEngine:
         if not phrase:
             return ""
 
+        normalized_phrase = self._normalize_ru_to_en_source_vocabulary(phrase)
+        if normalized_phrase != phrase:
+            self._log(f"RU2EN source normalized: {phrase} -> {normalized_phrase}")
+            phrase = normalized_phrase
+
         phrase_norm = self._normalize_compare_text(phrase)
         if not phrase_norm:
             return ""
@@ -2130,7 +2677,7 @@ class AudioEngine:
         phrase_words = phrase.split()
         phrase_norm_words = phrase_norm.split()
 
-        for emitted_phrase in reversed(self._ru_to_en_emitted_phrases[-8:]):
+        for emitted_phrase in reversed(self._ru_to_en_emitted_phrases[-2:]):
             emitted_norm = self._normalize_compare_text(emitted_phrase)
             if not emitted_norm:
                 continue
@@ -2149,14 +2696,51 @@ class AudioEngine:
             if 0 < common_prefix_len < len(phrase_norm_words):
                 remaining_raw_words = phrase_words[common_prefix_len:]
                 if remaining_raw_words:
-                    return self._normalize_text(" ".join(remaining_raw_words))
+                    remaining_text = self._normalize_text(" ".join(remaining_raw_words))
+                    if self._should_skip_ru_to_en_prepare_born_suffix_tail_to(remaining_text):
+                        return ""
+                    if (
+                        self._is_ru_to_en_safe_suffix_emit(remaining_text)
+                        and self._allow_ru_to_en_source_fragment(
+                            remaining_text,
+                            source_context=emitted_phrase,
+                            is_suffix_extracted=True,
+                        )
+                    ):
+                        return remaining_text
+                    return ""
 
             incremental = self._normalize_text(
                 self._extract_incremental_text(emitted_phrase, phrase)
             )
             incremental_norm = self._normalize_compare_text(incremental)
             if incremental_norm and incremental_norm != phrase_norm:
-                return incremental
+                if self._should_skip_ru_to_en_prepare_born_suffix_tail_to(incremental):
+                    return ""
+                if (
+                    self._is_ru_to_en_safe_suffix_emit(incremental)
+                    and self._allow_ru_to_en_source_fragment(
+                        incremental,
+                        source_context=emitted_phrase,
+                        is_suffix_extracted=True,
+                    )
+                ):
+                    return incremental
+                return ""
+
+            if (
+                len(phrase_norm_words) > len(emitted_norm_words)
+                and len(emitted_norm_words) >= 3
+                and phrase_norm_words[-len(emitted_norm_words):] == emitted_norm_words
+            ):
+                return ""
+
+            overlap_len = self._find_ru_to_en_suffix_prefix_overlap_len(
+                emitted_norm_words,
+                phrase_norm_words,
+            )
+            if overlap_len >= 3 and overlap_len == len(emitted_norm_words):
+                return ""
 
             if phrase_norm == emitted_norm:
                 return ""
@@ -2164,7 +2748,171 @@ class AudioEngine:
             if len(comparable_phrase_norm.split()) <= 6 and f" {comparable_phrase_norm} " in f" {comparable_emitted_norm} ":
                 return ""
 
+        if not self._allow_ru_to_en_source_fragment(
+            phrase,
+            source_context="",
+            is_suffix_extracted=False,
+        ):
+            return ""
+
         return phrase
+
+    def _should_skip_ru_to_en_prepare_born_suffix_tail_to(self, fragment: str) -> bool:
+        fragment = self._normalize_text(fragment)
+        normalized = self._normalize_compare_text(fragment)
+        if not normalized:
+            return False
+
+        words = normalized.split()
+        if len(words) > 5:
+            return False
+
+        if words[0] != "то":
+            return False
+
+        self._log(f"LOWLAT skipped prepare-born suffix-tail то: {fragment}")
+        return True
+
+
+    def _allow_ru_to_en_source_fragment(
+        self,
+        fragment: str,
+        *,
+        source_context: str,
+        is_suffix_extracted: bool,
+    ) -> bool:
+        if self._get_active_branch_config().translation_direction != "ru_to_en":
+            return True
+
+        fragment = self._normalize_text(fragment)
+        if not fragment:
+            return False
+
+        suspicious_starter = self._get_ru_to_en_suspicious_starter(fragment)
+        if not suspicious_starter:
+            return True
+
+        if not self._RU_TO_EN_DEPENDENT_SUFFIX_ADMISSION_FILTER_ENABLED:
+            self._log(f"LOWLAT allowed suspicious fragment: {fragment}")
+            return True
+
+        if not is_suffix_extracted:
+            self._log(f"LOWLAT allowed suspicious fragment: {fragment}")
+            return True
+
+        if not self._is_ru_to_en_weak_dependent_fragment(fragment):
+            self._log(f"LOWLAT allowed suspicious fragment: {fragment}")
+            return True
+
+        if self._has_ru_to_en_new_semantic_payload(fragment, source_context):
+            self._log(f"LOWLAT allowed suspicious fragment: {fragment}")
+            return True
+
+        if not self._is_ru_to_en_fragment_covered_by_source_context(fragment, source_context):
+            self._log(f"LOWLAT allowed suspicious fragment: {fragment}")
+            return True
+
+        self._log(f"LOWLAT blocked dependent suffix fragment: {fragment}")
+        return False
+
+    @classmethod
+    def _get_ru_to_en_suspicious_starter(cls, fragment: str) -> str:
+        normalized = cls._normalize_compare_text(fragment)
+        if not normalized:
+            return ""
+
+        for starter in (
+            "так как",
+            "потому что",
+            "чтобы",
+            "и то",
+            "а то",
+            "которого",
+            "которому",
+            "которыми",
+            "которыми",
+            "которым",
+            "которую",
+            "которая",
+            "которое",
+            "которые",
+            "которой",
+            "который",
+            "то",
+            "но",
+            "и",
+            "а",
+            "или",
+        ):
+            if normalized == starter or normalized.startswith(f"{starter} "):
+                return starter
+        return ""
+
+    def _is_ru_to_en_weak_dependent_fragment(self, fragment: str) -> bool:
+        normalized = self._normalize_compare_text(fragment)
+        if not normalized:
+            return True
+
+        words = normalized.split()
+        if len(words) <= 4:
+            return True
+
+        keywords = self._extract_ru_to_en_final_cleanup_keywords(fragment)
+        return len(words) <= 5 and len(keywords) <= 2
+
+    def _has_ru_to_en_new_semantic_payload(self, fragment: str, source_context: str) -> bool:
+        fragment_keywords = self._extract_ru_to_en_final_cleanup_keywords(fragment)
+        if not fragment_keywords:
+            return False
+
+        if re.search(r"\d", fragment):
+            return True
+
+        context_keywords = self._extract_ru_to_en_final_cleanup_keywords(source_context)
+        new_keywords = fragment_keywords - context_keywords
+        if len(new_keywords) >= 2:
+            return True
+
+        meaningful_payload_markers = {
+            "активн",
+            "быстр",
+            "гибк",
+            "до сих пор",
+            "невероятн",
+            "помог",
+            "польз",
+            "работ",
+            "ускор",
+        }
+        normalized = self._normalize_compare_text(fragment)
+        if any(marker in normalized for marker in meaningful_payload_markers):
+            return True
+
+        return False
+
+    def _is_ru_to_en_fragment_covered_by_source_context(self, fragment: str, source_context: str) -> bool:
+        fragment_norm = self._normalize_ru_to_en_dedup_phrase(fragment)
+        context_norm = self._normalize_ru_to_en_dedup_phrase(source_context)
+        if not fragment_norm or not context_norm:
+            return False
+
+        if f" {fragment_norm} " in f" {context_norm} ":
+            return True
+
+        fragment_words = fragment_norm.split()
+        context_words = context_norm.split()
+        if len(fragment_words) >= 3 and len(context_words) >= len(fragment_words):
+            if fragment_words == context_words[-len(fragment_words):]:
+                return True
+
+        overlap_len = self._find_ru_to_en_suffix_prefix_overlap_len(
+            context_words,
+            fragment_words,
+        )
+        if overlap_len >= max(3, len(fragment_words) - 1):
+            return True
+
+        return SequenceMatcher(None, context_norm, fragment_norm).ratio() >= 0.72
 
     def _remember_ru_to_en_emitted_phrase(self, phrase: str) -> None:
         phrase = self._normalize_text(phrase)
@@ -2175,7 +2923,265 @@ class AudioEngine:
         self._ru_to_en_emitted_phrase_norms.add(phrase_norm)
         self._ru_to_en_emitted_phrases.append(phrase)
         if len(self._ru_to_en_emitted_phrases) > 24:
+            overflow = len(self._ru_to_en_emitted_phrases) - 24
             self._ru_to_en_emitted_phrases = self._ru_to_en_emitted_phrases[-24:]
+            self._ru_to_en_finalized_phrase_count = max(
+                0,
+                self._ru_to_en_finalized_phrase_count - overflow,
+            )
+
+    def _log_ru_to_en_finalized_segments(self) -> None:
+        new_phrases = self._ru_to_en_emitted_phrases[self._ru_to_en_finalized_phrase_count:]
+        if not new_phrases:
+            return
+
+        cleaned_phrases = self._cleanup_ru_to_en_finalized_phrases(new_phrases)
+        if not cleaned_phrases:
+            cleaned_phrases = new_phrases
+
+        final_text = self._normalize_text(" ".join(cleaned_phrases))
+        if not final_text:
+            return
+
+        self._ru_to_en_finalized_phrase_count = len(self._ru_to_en_emitted_phrases)
+        self._log(f"FINAL: {final_text}")
+
+    def _cleanup_ru_to_en_finalized_phrases(self, phrases: list[str]) -> list[str]:
+        cleaned: list[str] = []
+
+        for raw_phrase in phrases:
+            phrase = self._normalize_text(raw_phrase)
+            if not phrase:
+                continue
+
+            cleaned.append(phrase)
+            while len(cleaned) >= 2:
+                previous = cleaned[-2]
+                current = cleaned[-1]
+                action, replacement = self._resolve_ru_to_en_final_phrase_pair(previous, current)
+
+                if action == "keep":
+                    break
+
+                if action == "replace_previous":
+                    self._log(f"FINAL cleanup dropped weak draft: {previous}")
+                    cleaned[-2] = replacement or current
+                    cleaned.pop()
+                    continue
+
+                if action == "skip_current":
+                    self._log(f"FINAL cleanup dropped weak return: {current}")
+                    cleaned.pop()
+                    break
+
+                if action == "merge":
+                    if replacement and replacement != previous:
+                        self._log(f"FINAL cleanup merged: {previous} + {current} -> {replacement}")
+                    cleaned[-2] = replacement or previous
+                    cleaned.pop()
+                    continue
+
+                break
+
+        return cleaned
+
+    def _resolve_ru_to_en_final_phrase_pair(self, previous: str, current: str) -> tuple[str, str]:
+        previous_norm = self._normalize_compare_text(previous)
+        current_norm = self._normalize_compare_text(current)
+        if not previous_norm or not current_norm:
+            return "keep", ""
+
+        if previous_norm == current_norm:
+            return "replace_previous", current if len(current) >= len(previous) else previous
+
+        previous_keywords = self._extract_ru_to_en_final_cleanup_keywords(previous)
+        current_keywords = self._extract_ru_to_en_final_cleanup_keywords(current)
+        shared_keywords = previous_keywords & current_keywords
+
+        overlap_len = self._find_ru_to_en_suffix_prefix_overlap_len(
+            previous_norm.split(),
+            current_norm.split(),
+        )
+        merged_text = self._merge_final_texts(previous, current)
+        merged_norm = self._normalize_compare_text(merged_text)
+        if (
+            merged_norm
+            and merged_norm not in {previous_norm, current_norm}
+            and overlap_len >= 2
+        ):
+            return "merge", merged_text
+
+        if self._is_ru_to_en_near_duplicate_phrase(previous_norm, current_norm):
+            return "replace_previous", current if len(current) >= len(previous) else previous
+
+        if self._is_ru_to_en_weak_final_draft(previous, current, previous_keywords, current_keywords, shared_keywords):
+            return "replace_previous", current
+
+        if self._is_ru_to_en_weak_final_draft(current, previous, current_keywords, previous_keywords, shared_keywords):
+            return "skip_current", previous
+
+        return "keep", ""
+
+    def _is_ru_to_en_weak_final_draft(
+        self,
+        draft: str,
+        fuller: str,
+        draft_keywords: set[str],
+        fuller_keywords: set[str],
+        shared_keywords: set[str],
+    ) -> bool:
+        draft_norm = self._normalize_compare_text(draft)
+        fuller_norm = self._normalize_compare_text(fuller)
+        if not draft_norm or not fuller_norm or draft_norm == fuller_norm:
+            return False
+
+        draft_words = draft_norm.split()
+        fuller_words = fuller_norm.split()
+        if len(fuller_words) < len(draft_words):
+            return False
+
+        if self._ru_to_en_phrase_has_unique_marker(draft, fuller):
+            return False
+
+        if not draft_keywords:
+            return len(draft_words) <= 3 and len(fuller_words) >= len(draft_words) + 2
+
+        if not shared_keywords:
+            return False
+
+        overlap_ratio = len(shared_keywords) / max(1, len(draft_keywords))
+        if overlap_ratio < 0.74:
+            return False
+
+        if len(draft_keywords) == 1:
+            return len(fuller_words) >= len(draft_words) + 2
+
+        if fuller_keywords - draft_keywords:
+            return True
+
+        return len(fuller_words) >= len(draft_words) + 2
+
+    def _find_ru_to_en_source_contained_duplicate(self, phrase: str) -> str:
+        phrase_text = self._normalize_text(phrase)
+        phrase_norm = self._normalize_ru_to_en_dedup_phrase(phrase_text)
+        phrase_words = phrase_norm.split()
+        if len(phrase_words) < 3:
+            return ""
+
+        phrase_keywords = self._extract_ru_to_en_final_cleanup_keywords(phrase_text)
+        for previous_text in reversed(self._ru_to_en_emitted_phrases[-5:]):
+            previous_norm = self._normalize_ru_to_en_dedup_phrase(previous_text)
+            previous_words = previous_norm.split()
+            if len(previous_words) < len(phrase_words):
+                continue
+
+            if (
+                len(phrase_words) >= 4
+                and f" {phrase_norm} " in f" {previous_norm} "
+            ):
+                return previous_text
+
+            if (
+                len(phrase_words) >= 3
+                and phrase_words == previous_words[-len(phrase_words):]
+            ):
+                previous_joined = "".join(previous_words)
+                phrase_joined = "".join(phrase_words)
+                if previous_joined and phrase_joined and (len(phrase_joined) / len(previous_joined)) >= 0.5:
+                    return previous_text
+
+            previous_keywords = self._extract_ru_to_en_final_cleanup_keywords(previous_text)
+            if not phrase_keywords or len(phrase_keywords) < 2 or len(previous_keywords) < len(phrase_keywords):
+                continue
+
+            shared_keywords = phrase_keywords & previous_keywords
+            if len(shared_keywords) < len(phrase_keywords):
+                continue
+
+            if len(phrase_words) + 2 <= len(previous_words):
+                return previous_text
+
+            if len(phrase_keywords) >= 3 and len(phrase_words) < len(previous_words):
+                return previous_text
+
+        return ""
+
+    @classmethod
+    def _ru_to_en_phrase_has_unique_marker(cls, draft: str, fuller: str) -> bool:
+        if re.search(r"\d", draft):
+            return True
+
+        draft_latin = {token.lower() for token in re.findall(r"[A-Za-z][A-Za-z0-9-]*", draft)}
+        fuller_latin = {token.lower() for token in re.findall(r"[A-Za-z][A-Za-z0-9-]*", fuller)}
+        if draft_latin - fuller_latin:
+            return True
+
+        draft_tokens = re.findall(r"[A-Za-zА-Яа-яЁё0-9-]+", draft)
+        fuller_tokens = {token.lower() for token in re.findall(r"[A-Za-zА-Яа-яЁё0-9-]+", fuller)}
+        for token in draft_tokens[1:]:
+            if token and token[0].isupper() and token.lower() not in fuller_tokens:
+                return True
+
+        return False
+
+    @classmethod
+    def _extract_ru_to_en_final_cleanup_keywords(cls, text: str) -> set[str]:
+        normalized = cls._normalize_compare_text(text)
+        if not normalized:
+            return set()
+
+        keywords: set[str] = set()
+        for word in normalized.split():
+            if word in cls._RU_TO_EN_FINAL_CLEANUP_STOPWORDS:
+                continue
+            normalized_word = cls._normalize_ru_to_en_final_cleanup_word(word)
+            if not normalized_word or normalized_word in cls._RU_TO_EN_FINAL_CLEANUP_STOPWORDS:
+                continue
+            keywords.add(normalized_word)
+        return keywords
+
+    @classmethod
+    def _normalize_ru_to_en_final_cleanup_word(cls, word: str) -> str:
+        word = cls._normalize_compare_text(word)
+        if not word:
+            return ""
+
+        if word.endswith(("ся", "сь")) and len(word) > 4:
+            word = word[:-2]
+
+        if len(word) <= 4:
+            return word
+
+        updated = True
+        while updated:
+            updated = False
+            for suffix in cls._RU_TO_EN_FINAL_CLEANUP_SUFFIXES:
+                if len(word) - len(suffix) < 4:
+                    continue
+                if word.endswith(suffix):
+                    word = word[:-len(suffix)]
+                    updated = True
+                    break
+
+        return word
+
+    @staticmethod
+    def _is_ru_to_en_safe_suffix_emit(text: str) -> bool:
+        normalized = AudioEngine._normalize_compare_text(text)
+        if not normalized:
+            return False
+        return len(normalized.split()) >= 3
+
+    @staticmethod
+    def _find_ru_to_en_suffix_prefix_overlap_len(
+        emitted_words: list[str],
+        phrase_words: list[str],
+    ) -> int:
+        max_overlap = min(len(emitted_words), len(phrase_words))
+        for overlap_len in range(max_overlap, 2, -1):
+            if emitted_words[-overlap_len:] == phrase_words[:overlap_len]:
+                return overlap_len
+        return 0
 
     @staticmethod
     def _is_ru_to_en_near_duplicate_phrase(phrase_norm: str, emitted_norm: str) -> bool:
@@ -2346,10 +3352,13 @@ class AudioEngine:
         if self._uses_sentence_partial_streaming() or self._uses_boundary_layer_streaming():
             return False
 
-        previous = self._normalize_compare_text(self.last_translated_text)
-        current = self._normalize_compare_text(text)
+        previous_text = self._normalize_text(self.last_translated_text)
+        previous = self._normalize_compare_text(previous_text)
+        current_text = self._normalize_text(text)
+        current = self._normalize_compare_text(current_text)
+        current_translated_norm = self._normalize_translated_compare_text(text)
 
-        if not current:
+        if not current or not current_translated_norm:
             return True
 
         if not previous:
@@ -2358,13 +3367,328 @@ class AudioEngine:
         if (time.monotonic() - self.last_translated_at) > 4.0:
             return False
 
+        for previous_translated_norm in reversed(self._recent_translated_compare_norms[-2:]):
+            if current_translated_norm == previous_translated_norm:
+                return True
+
         if current == previous:
             return True
 
         if current in previous:
             return True
 
+        if self._is_translated_suffix_duplicate(previous_text, current_text):
+            return True
+
         return False
+
+    def _try_replace_pending_translated_duplicate(self, text: str) -> bool:
+        if self._uses_sentence_partial_streaming() or self._uses_boundary_layer_streaming():
+            return False
+
+        current_translated_norm = self._normalize_translated_compare_text(text)
+        if not current_translated_norm:
+            return False
+
+        with self.tts_text_queue.mutex:
+            pending_items = self.tts_text_queue.queue
+            if not pending_items:
+                return False
+
+            last_text, last_samplerate = pending_items[-1]
+            last_translated_norm = self._normalize_translated_compare_text(last_text)
+            if current_translated_norm != last_translated_norm:
+                return False
+
+            pending_items[-1] = (text, last_samplerate)
+            return True
+
+    def _should_skip_strict_short_translated_fragment(
+        self,
+        source_text: str,
+        translated_text: str,
+    ) -> bool:
+        if not self.app_config.tts.strict_short_translated_fragment_filter:
+            return False
+
+        if self._get_active_branch_config().translation_direction != "ru_to_en":
+            return False
+
+        normalized_text = self._normalize_text(translated_text)
+        normalized_compare = self._normalize_compare_text(normalized_text)
+        if not normalized_text or not normalized_compare:
+            return False
+
+        if normalized_text.endswith((".", "!", "?")):
+            return False
+
+        words = normalized_compare.split()
+        if len(words) > 5:
+            return False
+
+        if words[0] not in {"and", "but", "because", "when", "if", "that", "which", "so"}:
+            return False
+
+        if re.search(r"\d", normalized_text):
+            return False
+
+        if self._translated_fragment_has_entity_or_brand_like_token(normalized_text):
+            return False
+
+        if self._translated_fragment_has_strong_content_word(words):
+            return False
+
+        if self._translated_fragment_starts_new_thought(words):
+            return False
+
+        return self._translated_fragment_has_recent_context_coverage(source_text)
+
+    @staticmethod
+    def _translated_fragment_has_entity_or_brand_like_token(text: str) -> bool:
+        tokens = re.findall(r"[A-Za-z][A-Za-z0-9-]*", text)
+        for index, token in enumerate(tokens):
+            if len(token) >= 2 and token.isupper():
+                return True
+            if any(ch.isupper() for ch in token[1:]):
+                return True
+            if index > 0 and token[:1].isupper():
+                return True
+            if re.search(r"[A-Za-z]+\d|\d+[A-Za-z]+", token):
+                return True
+        return False
+
+    @staticmethod
+    def _translated_fragment_has_strong_content_word(words: list[str]) -> bool:
+        weak_words = {
+            "a",
+            "an",
+            "and",
+            "are",
+            "as",
+            "at",
+            "be",
+            "because",
+            "been",
+            "being",
+            "but",
+            "by",
+            "for",
+            "from",
+            "if",
+            "in",
+            "into",
+            "is",
+            "it",
+            "its",
+            "me",
+            "my",
+            "of",
+            "on",
+            "or",
+            "our",
+            "so",
+            "that",
+            "the",
+            "their",
+            "them",
+            "there",
+            "these",
+            "this",
+            "those",
+            "to",
+            "us",
+            "was",
+            "we",
+            "were",
+            "when",
+            "which",
+            "with",
+            "without",
+            "you",
+            "your",
+        }
+
+        for word in words[1:]:
+            if len(word) >= 6 and word not in weak_words:
+                return True
+            if word not in weak_words:
+                return True
+        return False
+
+    @staticmethod
+    def _translated_fragment_starts_new_thought(words: list[str]) -> bool:
+        if len(words) < 2:
+            return False
+
+        if words[1] in {
+            "i",
+            "we",
+            "he",
+            "she",
+            "they",
+            "you",
+            "my",
+            "our",
+            "his",
+            "her",
+            "their",
+            "this",
+            "that",
+            "these",
+            "those",
+        }:
+            return True
+
+        return False
+
+    def _translated_fragment_has_recent_context_coverage(self, source_text: str) -> bool:
+        current_source = self._normalize_text(source_text)
+        if not self._source_fragment_looks_like_weak_continuation(current_source):
+            return False
+
+        current_norm = self._normalize_ru_to_en_dedup_phrase(current_source)
+        current_words = current_norm.split()
+        if len(current_words) < 3:
+            return False
+
+        for previous_text in reversed(self._recent_translated_source_texts[-3:]):
+            previous_norm = self._normalize_ru_to_en_dedup_phrase(previous_text)
+            if not previous_norm or previous_norm == current_norm:
+                continue
+            previous_words = previous_norm.split()
+
+            if current_words == previous_words[-len(current_words):]:
+                return True
+
+            overlap_len = self._find_ru_to_en_suffix_prefix_overlap_len(
+                previous_words,
+                current_words,
+            )
+            if overlap_len >= max(3, len(current_words) - 1):
+                return True
+
+            if SequenceMatcher(None, previous_norm, current_norm).ratio() >= 0.72:
+                return True
+
+        return False
+
+    @classmethod
+    def _source_fragment_looks_like_weak_continuation(cls, source_text: str) -> bool:
+        normalized = cls._normalize_compare_text(source_text)
+        if not normalized:
+            return False
+
+        words = normalized.split()
+        if not words or len(words) > 6:
+            return False
+
+        first_word = words[0]
+        if first_word in {"и", "но", "а", "или", "если", "когда", "что", "чтобы", "то"}:
+            return True
+
+        if first_word in {
+            "который",
+            "которая",
+            "которое",
+            "которые",
+            "которого",
+            "которой",
+            "которому",
+            "которым",
+            "которую",
+        }:
+            return True
+
+        return len(words) >= 2 and tuple(words[:2]) in {
+            ("потому", "что"),
+            ("так", "как"),
+            ("так", "что"),
+            ("для", "того"),
+        }
+
+    def _remember_translated_text_for_compare(self, text: str) -> None:
+        normalized_text = self._normalize_text(text)
+        normalized = self._normalize_translated_compare_text(text)
+        if not normalized or not normalized_text:
+            return
+
+        self._recent_translated_compare_norms.append(normalized)
+        if len(self._recent_translated_compare_norms) > 8:
+            self._recent_translated_compare_norms = self._recent_translated_compare_norms[-8:]
+
+        self._recent_translated_texts.append(normalized_text)
+        if len(self._recent_translated_texts) > 8:
+            self._recent_translated_texts = self._recent_translated_texts[-8:]
+
+    def _remember_translated_source_text_for_compare(self, text: str) -> None:
+        normalized_text = self._normalize_text(text)
+        if not normalized_text:
+            return
+
+        self._recent_translated_source_texts.append(normalized_text)
+        if len(self._recent_translated_source_texts) > 8:
+            self._recent_translated_source_texts = self._recent_translated_source_texts[-8:]
+
+    def _find_same_prefix_translated_retry(self, text: str) -> str:
+        current_text = self._normalize_text(text)
+        current_words = self._normalize_compare_text(current_text).split()
+        if len(current_words) < 5:
+            return ""
+
+        for previous_text in reversed(self._recent_translated_texts[-5:]):
+            previous_words = self._normalize_compare_text(previous_text).split()
+            if len(previous_words) < 5:
+                continue
+
+            if abs(len(previous_words) - len(current_words)) > 2:
+                continue
+
+            min_len = min(len(previous_words), len(current_words))
+            required_prefix_words = min(6, min_len - 1)
+            if required_prefix_words < 4:
+                continue
+
+            common_prefix_len = 0
+            for left, right in zip(previous_words, current_words):
+                if left != right:
+                    break
+                common_prefix_len += 1
+
+            if common_prefix_len < required_prefix_words:
+                continue
+
+            previous_tail = previous_words[common_prefix_len:]
+            current_tail = current_words[common_prefix_len:]
+            if not previous_tail or not current_tail or previous_tail == current_tail:
+                continue
+
+            if len(previous_tail) > 3 or len(current_tail) > 3:
+                continue
+
+            return previous_text
+
+        return ""
+
+    @classmethod
+    def _is_translated_suffix_duplicate(cls, previous_text: str, current_text: str) -> bool:
+        previous_tokens = cls._normalize_compare_text(previous_text).split()
+        current_tokens = cls._normalize_compare_text(current_text).split()
+
+        if len(previous_tokens) < 4 or len(current_tokens) < 3:
+            return False
+
+        if len(current_tokens) >= len(previous_tokens):
+            return False
+
+        if current_tokens != previous_tokens[-len(current_tokens):]:
+            return False
+
+        current_joined = "".join(current_tokens)
+        previous_joined = "".join(previous_tokens)
+        if not current_joined or not previous_joined:
+            return False
+
+        return (len(current_joined) / len(previous_joined)) >= 0.5
 
     def _strip_known_stt_hallucination_tail(self, text: str) -> str:
         if self._get_active_branch_config().translation_direction != "ru_to_en":
@@ -2472,6 +3796,11 @@ class AudioEngine:
         text = AudioEngine._normalize_text(text).lower()
         text = "".join(ch for ch in text if ch.isalnum() or ch.isspace())
         return " ".join(text.split()).strip()
+
+    @staticmethod
+    def _normalize_translated_compare_text(text: str) -> str:
+        text = AudioEngine._normalize_text(text).lower()
+        return "".join(ch for ch in text if ch.isalnum())
 
     @staticmethod
     def _extract_incremental_text(previous: str, current: str) -> str:

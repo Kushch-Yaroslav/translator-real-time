@@ -68,6 +68,7 @@ class STTConfig:
 class TranslationRuntimeConfig:
     direction: str = "en_to_ru"
     enabled: bool = True
+    ru_to_en_context_aware_translation_enabled: bool = False
 
 
 @dataclass
@@ -94,6 +95,7 @@ class TTSRuntimeConfig:
     data_dir: str = "/media/yaroslav/DATA/ai_models/piper"
     use_cuda: bool | None = None
     max_queue_latency_sec: float = 0.75
+    strict_short_translated_fragment_filter: bool = True
 
 
 @dataclass

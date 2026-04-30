@@ -54,6 +54,7 @@ class BenchmarkMetrics:
 
     duplicate_queued_count: int = 0
     duplicate_translated_count: int = 0
+    semantic_overlap_count: int = 0
 
     long_tts_segments_count: int = 0
     long_translation_gaps_count: int = 0
@@ -70,6 +71,44 @@ class BenchmarkMetrics:
     expected_word_count: int | None = None
     final_word_count: int | None = None
     word_count_diff: int | None = None
+    coverage_ratio: float | None = None
+
+
+@dataclass
+class SemanticOverlapDiagnostic:
+    stream: str
+    index_a: int
+    segment_a: str
+    index_b: int
+    segment_b: str
+    overlap_score: float
+    shared_keywords: list[str] = field(default_factory=list)
+
+
+@dataclass
+class FragmentCoverageDiagnostic:
+    fragment_index: int
+    expected_fragment: str
+    best_queued_index: int | None = None
+    best_queued_segment: str = ""
+    queued_overlap_score: float = 0.0
+    queued_shared_keywords: list[str] = field(default_factory=list)
+    best_final_index: int | None = None
+    best_final_segment: str = ""
+    final_overlap_score: float = 0.0
+    final_shared_keywords: list[str] = field(default_factory=list)
+    status: str = "missing"
+
+
+@dataclass
+class QueuedFinalCoverageDiagnostic:
+    queued_index: int
+    queued_segment: str
+    best_final_index: int | None = None
+    best_final_segment: str = ""
+    overlap_score: float = 0.0
+    shared_keywords: list[str] = field(default_factory=list)
+    status: str = "missing_in_final"
 
 
 @dataclass
@@ -95,6 +134,11 @@ class OfflineBenchmarkReport:
 
     duplicate_queued_segments: list[str] = field(default_factory=list)
     duplicate_translated_segments: list[str] = field(default_factory=list)
+    suspicious_semantic_overlaps: list[SemanticOverlapDiagnostic] = field(default_factory=list)
+    suspicious_returns: list[SemanticOverlapDiagnostic] = field(default_factory=list)
+    final_coverage_by_fragment: list[FragmentCoverageDiagnostic] = field(default_factory=list)
+    lost_expected_fragments: list[FragmentCoverageDiagnostic] = field(default_factory=list)
+    queued_not_covered_by_final: list[QueuedFinalCoverageDiagnostic] = field(default_factory=list)
 
     long_tts_segments: list[str] = field(default_factory=list)
     long_translation_gaps: list[str] = field(default_factory=list)
@@ -123,8 +167,10 @@ class BenchmarkSummaryAverage:
     realtime_factor: float = 0.0
     duplicate_queued_count: float = 0.0
     duplicate_translated_count: float = 0.0
+    semantic_overlap_count: float = 0.0
     long_translation_gaps_count: float = 0.0
     long_tts_segments_count: float = 0.0
+    coverage_ratio: float = 0.0
 
 
 @dataclass
@@ -267,6 +313,355 @@ def normalize_compare_text(text: str) -> str:
     return " ".join(text.split()).strip()
 
 
+def normalize_translated_compare_text(text: str) -> str:
+    text = normalize_text(text).lower()
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+_SEMANTIC_STOP_WORDS = {
+    "я",
+    "ты",
+    "он",
+    "она",
+    "оно",
+    "мы",
+    "вы",
+    "они",
+    "это",
+    "как",
+    "что",
+    "чем",
+    "чтобы",
+    "в",
+    "во",
+    "на",
+    "по",
+    "из",
+    "у",
+    "к",
+    "ко",
+    "с",
+    "со",
+    "за",
+    "от",
+    "до",
+    "под",
+    "над",
+    "при",
+    "и",
+    "но",
+    "то",
+    "так",
+    "потому",
+    "если",
+    "когда",
+    "мой",
+    "моя",
+    "мои",
+    "моё",
+    "его",
+    "ее",
+    "её",
+    "их",
+    "наш",
+    "наша",
+    "наши",
+    "ваш",
+    "ваша",
+    "ваши",
+    "для",
+    "через",
+    "эт",
+    "этот",
+    "эта",
+    "эти",
+    "также",
+    "еще",
+    "ещё",
+}
+
+_RUSSIAN_STEM_SUFFIXES = (
+    "аются", "яются", "аются", "яются", "ились", "ались", "ились",
+    "ывать", "ивать", "овать", "ировать",
+    "аться", "яться", "иться", "еться", "нуть",
+    "аешь", "яешь", "аете", "яете", "ают", "яют",
+    "уешь", "уете", "уют", "ишь", "ите", "им", "ит", "ят", "ют",
+    "ался", "ялся", "илась", "илась", "илось", "ались", "ялись",
+    "ал", "ала", "ало", "али", "ял", "яла", "яло", "яли",
+    "аю", "яю", "ую", "юю", "ешь", "ете", "ем", "ут", "ют",
+    "ить", "ать", "ять", "еть", "оть", "уть", "ти",
+    "иями", "ями", "ами", "его", "ого", "ему", "ому", "ыми", "ими",
+    "иях", "ах", "ях", "ия", "ья", "ие", "ье", "ий", "ый", "ой",
+    "ая", "яя", "ое", "ее", "ую", "юю", "ом", "ем", "ам", "ям",
+    "ов", "ев", "ей", "иям", "ием",
+    "а", "я", "ы", "и", "е", "о", "у", "ю", "ь",
+)
+
+
+def normalize_semantic_word(word: str) -> str:
+    word = normalize_compare_text(word)
+    if not word:
+        return ""
+
+    if word.endswith(("ся", "сь")) and len(word) > 4:
+        word = word[:-2]
+
+    if len(word) <= 4:
+        return word
+
+    for suffix in _RUSSIAN_STEM_SUFFIXES:
+        if len(word) - len(suffix) < 4:
+            continue
+        if word.endswith(suffix):
+            word = word[:-len(suffix)]
+            break
+
+    if len(word) > 5 and word.endswith(("ова", "ева")):
+        word = word[:-3]
+
+    if len(word) > 5 and word.endswith(("ир", "ыва", "ива")):
+        word = word[:-1] if word.endswith("ир") else word[:-3]
+
+    return word
+
+
+def extract_semantic_keywords(text: str) -> list[str]:
+    normalized = normalize_compare_text(text)
+    if not normalized:
+        return []
+
+    keywords: list[str] = []
+    seen: set[str] = set()
+    for raw_word in normalized.split():
+        if raw_word in _SEMANTIC_STOP_WORDS:
+            continue
+        keyword = normalize_semantic_word(raw_word)
+        if not keyword or keyword in _SEMANTIC_STOP_WORDS or keyword in seen:
+            continue
+        seen.add(keyword)
+        keywords.append(keyword)
+    return keywords
+
+
+def analyze_semantic_overlaps(
+    items: list[str],
+    *,
+    stream: str,
+    window_size: int = 5,
+) -> list[SemanticOverlapDiagnostic]:
+    diagnostics: list[SemanticOverlapDiagnostic] = []
+    if len(items) < 2:
+        return diagnostics
+
+    for index_b, segment_b in enumerate(items):
+        compare_b = normalize_compare_text(segment_b)
+        if not compare_b:
+            continue
+        keywords_b = extract_semantic_keywords(segment_b)
+        if not keywords_b:
+            continue
+        set_b = set(keywords_b)
+
+        start_index = max(0, index_b - window_size)
+        for index_a in range(start_index, index_b):
+            segment_a = items[index_a]
+            compare_a = normalize_compare_text(segment_a)
+            if not compare_a or compare_a == compare_b:
+                continue
+
+            keywords_a = extract_semantic_keywords(segment_a)
+            if not keywords_a:
+                continue
+            set_a = set(keywords_a)
+
+            shared = sorted(set_a & set_b)
+            if not shared:
+                continue
+
+            overlap_score = len(shared) / float(min(len(set_a), len(set_b)))
+            if len(shared) >= 2:
+                is_suspicious = overlap_score >= 0.5
+            else:
+                is_suspicious = overlap_score >= 0.8 and min(len(set_a), len(set_b)) <= 2
+
+            if not is_suspicious:
+                continue
+
+            diagnostics.append(
+                SemanticOverlapDiagnostic(
+                    stream=stream,
+                    index_a=index_a,
+                    segment_a=segment_a,
+                    index_b=index_b,
+                    segment_b=segment_b,
+                    overlap_score=round(overlap_score, 2),
+                    shared_keywords=shared,
+                )
+            )
+
+    return diagnostics
+
+
+def split_text_into_semantic_fragments(text: str) -> list[str]:
+    text = normalize_text((text or "").replace("\n", " "))
+    if not text:
+        return []
+
+    fragments: list[str] = []
+    buffer = ""
+    for character in text:
+        buffer += character
+        if character in ".!?":
+            fragment = normalize_text(buffer)
+            if fragment:
+                fragments.append(fragment)
+            buffer = ""
+            continue
+
+        if character in ",;:":
+            candidate = normalize_text(buffer)
+            if len(candidate.split()) >= 4:
+                fragments.append(candidate)
+                buffer = ""
+
+    trailing = normalize_text(buffer)
+    if trailing:
+        fragments.append(trailing)
+
+    return fragments
+
+
+def _semantic_match_score(
+    source_keywords: list[str],
+    target_keywords: list[str],
+) -> tuple[float, list[str]]:
+    if not source_keywords or not target_keywords:
+        return 0.0, []
+
+    shared = sorted(set(source_keywords) & set(target_keywords))
+    if not shared:
+        return 0.0, []
+
+    score = len(shared) / float(len(set(source_keywords)))
+    return round(score, 2), shared
+
+
+def _is_meaningful_fragment_match(
+    score: float,
+    shared_keywords: list[str],
+    source_keywords: list[str],
+    target_keywords: list[str],
+) -> bool:
+    if not shared_keywords:
+        return False
+    if len(shared_keywords) >= 3 and score >= 0.5:
+        return True
+    if len(shared_keywords) >= 2 and score >= 0.6:
+        return True
+    if score >= 1.0 and min(len(set(source_keywords)), len(set(target_keywords))) <= 2:
+        return True
+    return False
+
+
+def _find_best_fragment_match(
+    fragment: str,
+    candidates: list[str],
+) -> tuple[int | None, str, float, list[str]]:
+    source_keywords = extract_semantic_keywords(fragment)
+    if not source_keywords:
+        return None, "", 0.0, []
+
+    best_index: int | None = None
+    best_segment = ""
+    best_score = 0.0
+    best_shared: list[str] = []
+    best_candidate_keywords: list[str] = []
+
+    for index, candidate in enumerate(candidates):
+        candidate_keywords = extract_semantic_keywords(candidate)
+        score, shared = _semantic_match_score(source_keywords, candidate_keywords)
+        if score > best_score or (score == best_score and len(shared) > len(best_shared)):
+            best_index = index
+            best_segment = candidate
+            best_score = score
+            best_shared = shared
+            best_candidate_keywords = candidate_keywords
+
+    if best_index is None:
+        return None, "", 0.0, []
+
+    if not _is_meaningful_fragment_match(best_score, best_shared, source_keywords, best_candidate_keywords):
+        return None, "", 0.0, []
+
+    return best_index, best_segment, best_score, best_shared
+
+
+def build_fragment_coverage_report(
+    expected_text: str,
+    queued_segments: list[str],
+    final_segments: list[str],
+) -> tuple[list[FragmentCoverageDiagnostic], list[FragmentCoverageDiagnostic], list[QueuedFinalCoverageDiagnostic]]:
+    expected_fragments = split_text_into_semantic_fragments(expected_text)
+    coverage_report: list[FragmentCoverageDiagnostic] = []
+    lost_fragments: list[FragmentCoverageDiagnostic] = []
+
+    for fragment_index, expected_fragment in enumerate(expected_fragments):
+        queued_index, queued_segment, queued_score, queued_shared = _find_best_fragment_match(
+            expected_fragment,
+            queued_segments,
+        )
+        final_index, final_segment, final_score, final_shared = _find_best_fragment_match(
+            expected_fragment,
+            final_segments,
+        )
+
+        if final_index is not None:
+            status = "covered_by_final"
+        elif queued_index is not None:
+            status = "covered_by_queue_only"
+        else:
+            status = "missing_before_queue"
+
+        diagnostic = FragmentCoverageDiagnostic(
+            fragment_index=fragment_index,
+            expected_fragment=expected_fragment,
+            best_queued_index=queued_index,
+            best_queued_segment=queued_segment,
+            queued_overlap_score=queued_score,
+            queued_shared_keywords=queued_shared,
+            best_final_index=final_index,
+            best_final_segment=final_segment,
+            final_overlap_score=final_score,
+            final_shared_keywords=final_shared,
+            status=status,
+        )
+        coverage_report.append(diagnostic)
+        if status != "covered_by_final":
+            lost_fragments.append(diagnostic)
+
+    queued_not_in_final: list[QueuedFinalCoverageDiagnostic] = []
+    for queued_index, queued_segment in enumerate(queued_segments):
+        final_index, final_segment, score, shared = _find_best_fragment_match(
+            queued_segment,
+            final_segments,
+        )
+        status = "covered_by_final" if final_index is not None else "missing_in_final"
+        if status == "missing_in_final":
+            queued_not_in_final.append(
+                QueuedFinalCoverageDiagnostic(
+                    queued_index=queued_index,
+                    queued_segment=queued_segment,
+                    best_final_index=final_index,
+                    best_final_segment=final_segment,
+                    overlap_score=score,
+                    shared_keywords=shared,
+                    status=status,
+                )
+            )
+
+    return coverage_report, lost_fragments, queued_not_in_final
+
+
 def find_first_speech_at_sec(audio: np.ndarray, samplerate: int, threshold: float) -> float | None:
     if audio.size == 0:
         return None
@@ -282,11 +677,11 @@ def find_first_speech_at_sec(audio: np.ndarray, samplerate: int, threshold: floa
     return None
 
 
-def detect_duplicates(items: list[str]) -> list[str]:
+def detect_duplicates(items: list[str], *, normalizer=normalize_compare_text) -> list[str]:
     duplicates: list[str] = []
     seen: set[str] = set()
     for item in items:
-        normalized = normalize_compare_text(item)
+        normalized = normalizer(item)
         if not normalized:
             continue
         if normalized in seen:
@@ -431,25 +826,7 @@ def stop_headless_engine(engine: AudioEngine) -> None:
         except Exception as error:
             engine._handle_error(f"Realtime STT stop error: {error}")
 
-    for thread in (
-        engine.phrase_worker_thread,
-        engine.final_worker_thread,
-        engine.tts_worker_thread,
-    ):
-        if thread is not None and thread.is_alive():
-            thread.join(timeout=2.0)
-
-    engine.realtime_stt = None
-    engine.translation_service = None
-    engine.tts_service = None
-    engine.phrase_worker_thread = None
-    engine.final_worker_thread = None
-    engine.tts_worker_thread = None
-    engine._clear_final_text_queue()
-    engine._clear_low_latency_queue()
-    engine._clear_tts_text_queue()
-    engine._clear_pending_final()
-    engine._clear_partial_state()
+    engine.stop()
 
 
 def wait_for_pipeline_to_flush(engine: AudioEngine, max_wait_sec: float = 20.0) -> None:
@@ -621,13 +998,30 @@ def run_benchmark(
         return round(value - origin, 3)
 
     duration_sec = round(len(audio) / float(samplerate), 3)
+    suspicious_semantic_overlaps = [
+        *analyze_semantic_overlaps(queued_segments, stream="queued"),
+        *analyze_semantic_overlaps(final_segments, stream="final"),
+    ]
+    final_coverage_by_fragment: list[FragmentCoverageDiagnostic] = []
+    lost_expected_fragments: list[FragmentCoverageDiagnostic] = []
+    queued_not_covered_by_final: list[QueuedFinalCoverageDiagnostic] = []
+    suspicious_returns = [
+        overlap for overlap in suspicious_semantic_overlaps
+        if overlap.stream == "queued"
+    ]
 
     metrics = BenchmarkMetrics(
         queued_segments_count=len(queued_segments),
         translated_segments_count=len(translated_segments),
         final_segments_count=len(final_segments),
         duplicate_queued_count=len(detect_duplicates(queued_segments)),
-        duplicate_translated_count=len(detect_duplicates(translated_segments)),
+        duplicate_translated_count=len(
+            detect_duplicates(
+                translated_segments,
+                normalizer=normalize_translated_compare_text,
+            )
+        ),
+        semantic_overlap_count=len(suspicious_semantic_overlaps),
         long_tts_segments_count=len(long_tts_segments),
         long_translation_gaps_count=len(long_translation_gaps),
         avg_translation_gap_sec=round(sum(translation_gaps) / len(translation_gaps), 3) if translation_gaps else None,
@@ -643,6 +1037,20 @@ def run_benchmark(
         final_full_text = " ".join(final_segments)
         metrics.final_word_count = len(final_full_text.split())
         metrics.word_count_diff = metrics.final_word_count - metrics.expected_word_count
+        if metrics.expected_word_count > 0:
+            metrics.coverage_ratio = round(
+                metrics.final_word_count / float(metrics.expected_word_count),
+                3,
+            )
+        (
+            final_coverage_by_fragment,
+            lost_expected_fragments,
+            queued_not_covered_by_final,
+        ) = build_fragment_coverage_report(
+            expected_text,
+            queued_segments,
+            final_segments,
+        )
 
     report = OfflineBenchmarkReport(
         test_id=test_id,
@@ -661,7 +1069,15 @@ def run_benchmark(
         translated_segments=translated_segments,
         final_segments=final_segments,
         duplicate_queued_segments=detect_duplicates(queued_segments),
-        duplicate_translated_segments=detect_duplicates(translated_segments),
+        duplicate_translated_segments=detect_duplicates(
+            translated_segments,
+            normalizer=normalize_translated_compare_text,
+        ),
+        suspicious_semantic_overlaps=suspicious_semantic_overlaps,
+        suspicious_returns=suspicious_returns,
+        final_coverage_by_fragment=final_coverage_by_fragment,
+        lost_expected_fragments=lost_expected_fragments,
+        queued_not_covered_by_final=queued_not_covered_by_final,
         long_tts_segments=long_tts_segments,
         long_translation_gaps=long_translation_gaps,
         metrics=metrics,
@@ -685,6 +1101,7 @@ def compare_runs(current_summary: Dict[str, Any], previous_summary: Dict[str, An
             "realtime_factor",
             "duplicate_queued_count",
             "duplicate_translated_count",
+            "semantic_overlap_count",
             "long_translation_gaps_count",
             "long_tts_segments_count",
             "queue_start_delay_sec",
@@ -693,6 +1110,8 @@ def compare_runs(current_summary: Dict[str, Any], previous_summary: Dict[str, An
             "total_pipeline_time_sec",
             "word_count_diff",
         ]
+        if field_name == "coverage_ratio":
+            return "improved" if diff > 0 else "worse"
         if field_name in better_if_lower:
             return "improved" if diff < 0 else "worse"
         return "unknown"
@@ -712,9 +1131,11 @@ def compare_runs(current_summary: Dict[str, Any], previous_summary: Dict[str, An
         "realtime_factor",
         "duplicate_queued_count",
         "duplicate_translated_count",
+        "semantic_overlap_count",
         "long_translation_gaps_count",
         "long_tts_segments_count",
         "word_count_diff",
+        "coverage_ratio",
     ]
 
     curr_avg = current_summary.get("average", {})
@@ -874,8 +1295,12 @@ def main() -> int:
         avg.realtime_factor = round(sum((r.metrics.realtime_factor or 0) for r in success_reports) / count, 2)
         avg.duplicate_queued_count = round(sum(r.metrics.duplicate_queued_count for r in success_reports) / count, 2)
         avg.duplicate_translated_count = round(sum(r.metrics.duplicate_translated_count for r in success_reports) / count, 2)
+        avg.semantic_overlap_count = round(sum(r.metrics.semantic_overlap_count for r in success_reports) / count, 2)
         avg.long_translation_gaps_count = round(sum(r.metrics.long_translation_gaps_count for r in success_reports) / count, 2)
         avg.long_tts_segments_count = round(sum(r.metrics.long_tts_segments_count for r in success_reports) / count, 2)
+        coverage_values = [r.metrics.coverage_ratio for r in success_reports if r.metrics.coverage_ratio is not None]
+        if coverage_values:
+            avg.coverage_ratio = round(sum(coverage_values) / len(coverage_values), 3)
 
     summary = BenchmarkSummary(
         run_id=run_id,

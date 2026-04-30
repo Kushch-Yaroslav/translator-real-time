@@ -1,0 +1,537 @@
+{
+  "test_id": "large_simple_text/large_simple_text",
+  "input_path": "/media/yaroslav/DATA/Мой переводчик/recordings/benchmarks/ru_to_en/source/large_simple_text/large_simple_text.wav",
+  "expected_path": "/media/yaroslav/DATA/Мой переводчик/recordings/benchmarks/ru_to_en/source/large_simple_text/large_simple_text.expected.txt",
+  "expected_text": "Всем привет, меня зовут Ярослав мне 26 лет, я из Украины.\nСейчас мы общаемся через мой переводчик в реальном времени. Я его создал для помощи в преодолении языкового барьера, так как мой английский слабее уровня комфортного общения.\n\nТак же у меня есть ещё один пет проект - это проект для конвертации изображений. КОгда я работал в компании AEMDAYS, я делал лендинги, очень много лендингов. Так как у лендингов обычно нет сложной логики, то основное влияние на производительность вызывают картинки. Сначала я пользовался бесплатными сервисами, но упирался то в лимит, то в отсутсвие гибкости.\n\nИ я решил создать свой инструмент, которым активно пользуюсь до сих пор, который помог мне невероятно быстро ускорить работу.",
+  "duration_sec": 40.277,
+  "first_speech_at_sec": 0.28,
+  "first_queue_at_sec": 1.071,
+  "first_translate_at_sec": 2.223,
+  "first_tts_ready_at_sec": 3.259,
+  "queue_start_delay_sec": 0.791,
+  "translate_start_delay_sec": 1.943,
+  "tts_ready_start_delay_sec": 2.979,
+  "queued_segments": [
+    "Всем привет!",
+    "меня зовут Ярослав,",
+    "мне 26 лет,",
+    "я из Украины.",
+    "Сейчас мы общаемся через мой переводчик.",
+    "в реальном времени.",
+    "Я его создал для помощи в преодолении языкового барьера.",
+    "так как мой английский слабее уровня комфортного общения.",
+    "Также у меня есть еще один пет-проект.",
+    "Это проект для конвертации изображений.",
+    "Когда я работал в компании AMDase,",
+    "Когда я работал в компании AMDs,",
+    "я делал лендинги.",
+    "очень много лендингов.",
+    "Так как у лендингов обычно нет сложной логики,",
+    "лайндингов обычно нет сложной логики,",
+    "то основное влияние на производительность вызывают картинки.",
+    "Сначала я пользовался бесплатными сервисами.",
+    "но опирался то в лимит,",
+    "упирался то в лимит,",
+    "то в отсутствие гибкости.",
+    "И я решил создать свой инструмент,",
+    "которым активно пользуюсь до сих пор,",
+    "который помог мне невероятно быстро ускорить работу."
+  ],
+  "translated_segments": [
+    "Hey, everybody!",
+    "My name is Jaroslav,",
+    "I'm 26 years old,",
+    "I'm from Ukraine.",
+    "Now we're talking through my interpreter.",
+    "In real time.",
+    "I created it to help overcome the language barrier.",
+    "Because my English is weaker than my comfort level.",
+    "I also have another pet project.",
+    "It's a project to convert images.",
+    "When I was working for AMDase,",
+    "I've been making the landings.",
+    "There's a lot of landings.",
+    "Since the Landings don't usually have complex logic,",
+    "Lindings don't usually have complex logic,",
+    "the main effect on productivity is caused by images.",
+    "At first, I used free services.",
+    "But I ran into a limit,",
+    "I've been facing a limit,",
+    "There is no flexibility.",
+    "And I decided to create my instrument,",
+    "I've been using it very actively so far,",
+    "The one who helped me speed up my work in an incredibly fast way."
+  ],
+  "final_segments": [
+    "Всем привет! меня зовут Ярослав, мне 26 лет, я из Украины. Сейчас мы общаемся через мой переводчик. в реальном времени. Я его создал для помощи в преодолении языкового барьера. так как мой английский слабее уровня комфортного общения. Также у меня есть еще один пет-проект. Это проект для конвертации изображений.",
+    "Когда я работал в компании AMDase, я делал лендинги. очень много лендингов. Так как у лендингов обычно нет сложной логики, то основное влияние на производительность вызывают картинки. Сначала я пользовался бесплатными сервисами. но опирался то в лимит, упирался то в лимит, то в отсутствие гибкости.",
+    "И я решил создать свой инструмент, которым активно пользуюсь до сих пор, который помог мне невероятно быстро ускорить работу."
+  ],
+  "duplicate_queued_segments": [],
+  "duplicate_translated_segments": [],
+  "suspicious_semantic_overlaps": [
+    {
+      "stream": "queued",
+      "index_a": 10,
+      "segment_a": "Когда я работал в компании AMDase,",
+      "index_b": 11,
+      "segment_b": "Когда я работал в компании AMDs,",
+      "overlap_score": 0.67,
+      "shared_keywords": [
+        "компани",
+        "работ"
+      ]
+    },
+    {
+      "stream": "queued",
+      "index_a": 14,
+      "segment_a": "Так как у лендингов обычно нет сложной логики,",
+      "index_b": 15,
+      "segment_b": "лайндингов обычно нет сложной логики,",
+      "overlap_score": 0.8,
+      "shared_keywords": [
+        "логик",
+        "нет",
+        "обычн",
+        "сложн"
+      ]
+    }
+  ],
+  "suspicious_returns": [
+    {
+      "stream": "queued",
+      "index_a": 10,
+      "segment_a": "Когда я работал в компании AMDase,",
+      "index_b": 11,
+      "segment_b": "Когда я работал в компании AMDs,",
+      "overlap_score": 0.67,
+      "shared_keywords": [
+        "компани",
+        "работ"
+      ]
+    },
+    {
+      "stream": "queued",
+      "index_a": 14,
+      "segment_a": "Так как у лендингов обычно нет сложной логики,",
+      "index_b": 15,
+      "segment_b": "лайндингов обычно нет сложной логики,",
+      "overlap_score": 0.8,
+      "shared_keywords": [
+        "логик",
+        "нет",
+        "обычн",
+        "сложн"
+      ]
+    }
+  ],
+  "final_coverage_by_fragment": [
+    {
+      "fragment_index": 0,
+      "expected_fragment": "Всем привет, меня зовут Ярослав мне 26 лет,",
+      "best_queued_index": null,
+      "best_queued_segment": "",
+      "queued_overlap_score": 0.0,
+      "queued_shared_keywords": [],
+      "best_final_index": 0,
+      "best_final_segment": "Всем привет! меня зовут Ярослав, мне 26 лет, я из Украины. Сейчас мы общаемся через мой переводчик. в реальном времени. Я его создал для помощи в преодолении языкового барьера. так как мой английский слабее уровня комфортного общения. Также у меня есть еще один пет-проект. Это проект для конвертации изображений.",
+      "final_overlap_score": 1.0,
+      "final_shared_keywords": [
+        "26",
+        "всем",
+        "зовут",
+        "лет",
+        "меня",
+        "мне",
+        "привет",
+        "ярослав"
+      ],
+      "status": "covered_by_final"
+    },
+    {
+      "fragment_index": 1,
+      "expected_fragment": "я из Украины.",
+      "best_queued_index": 3,
+      "best_queued_segment": "я из Украины.",
+      "queued_overlap_score": 1.0,
+      "queued_shared_keywords": [
+        "украин"
+      ],
+      "best_final_index": 0,
+      "best_final_segment": "Всем привет! меня зовут Ярослав, мне 26 лет, я из Украины. Сейчас мы общаемся через мой переводчик. в реальном времени. Я его создал для помощи в преодолении языкового барьера. так как мой английский слабее уровня комфортного общения. Также у меня есть еще один пет-проект. Это проект для конвертации изображений.",
+      "final_overlap_score": 1.0,
+      "final_shared_keywords": [
+        "украин"
+      ],
+      "status": "covered_by_final"
+    },
+    {
+      "fragment_index": 2,
+      "expected_fragment": "Сейчас мы общаемся через мой переводчик в реальном времени.",
+      "best_queued_index": 4,
+      "best_queued_segment": "Сейчас мы общаемся через мой переводчик.",
+      "queued_overlap_score": 0.6,
+      "queued_shared_keywords": [
+        "обща",
+        "переводчик",
+        "сейчас"
+      ],
+      "best_final_index": 0,
+      "best_final_segment": "Всем привет! меня зовут Ярослав, мне 26 лет, я из Украины. Сейчас мы общаемся через мой переводчик. в реальном времени. Я его создал для помощи в преодолении языкового барьера. так как мой английский слабее уровня комфортного общения. Также у меня есть еще один пет-проект. Это проект для конвертации изображений.",
+      "final_overlap_score": 1.0,
+      "final_shared_keywords": [
+        "времен",
+        "обща",
+        "переводчик",
+        "реальн",
+        "сейчас"
+      ],
+      "status": "covered_by_final"
+    },
+    {
+      "fragment_index": 3,
+      "expected_fragment": "Я его создал для помощи в преодолении языкового барьера,",
+      "best_queued_index": 6,
+      "best_queued_segment": "Я его создал для помощи в преодолении языкового барьера.",
+      "queued_overlap_score": 1.0,
+      "queued_shared_keywords": [
+        "барьер",
+        "помощ",
+        "преодолени",
+        "созд",
+        "языков"
+      ],
+      "best_final_index": 0,
+      "best_final_segment": "Всем привет! меня зовут Ярослав, мне 26 лет, я из Украины. Сейчас мы общаемся через мой переводчик. в реальном времени. Я его создал для помощи в преодолении языкового барьера. так как мой английский слабее уровня комфортного общения. Также у меня есть еще один пет-проект. Это проект для конвертации изображений.",
+      "final_overlap_score": 1.0,
+      "final_shared_keywords": [
+        "барьер",
+        "помощ",
+        "преодолени",
+        "созд",
+        "языков"
+      ],
+      "status": "covered_by_final"
+    },
+    {
+      "fragment_index": 4,
+      "expected_fragment": "так как мой английский слабее уровня комфортного общения.",
+      "best_queued_index": 7,
+      "best_queued_segment": "так как мой английский слабее уровня комфортного общения.",
+      "queued_overlap_score": 1.0,
+      "queued_shared_keywords": [
+        "английск",
+        "комфортн",
+        "общен",
+        "слаб",
+        "уровн"
+      ],
+      "best_final_index": 0,
+      "best_final_segment": "Всем привет! меня зовут Ярослав, мне 26 лет, я из Украины. Сейчас мы общаемся через мой переводчик. в реальном времени. Я его создал для помощи в преодолении языкового барьера. так как мой английский слабее уровня комфортного общения. Также у меня есть еще один пет-проект. Это проект для конвертации изображений.",
+      "final_overlap_score": 1.0,
+      "final_shared_keywords": [
+        "английск",
+        "комфортн",
+        "общен",
+        "слаб",
+        "уровн"
+      ],
+      "status": "covered_by_final"
+    },
+    {
+      "fragment_index": 5,
+      "expected_fragment": "Так же у меня есть ещё один пет проект - это проект для конвертации изображений.",
+      "best_queued_index": null,
+      "best_queued_segment": "",
+      "queued_overlap_score": 0.0,
+      "queued_shared_keywords": [],
+      "best_final_index": 0,
+      "best_final_segment": "Всем привет! меня зовут Ярослав, мне 26 лет, я из Украины. Сейчас мы общаемся через мой переводчик. в реальном времени. Я его создал для помощи в преодолении языкового барьера. так как мой английский слабее уровня комфортного общения. Также у меня есть еще один пет-проект. Это проект для конвертации изображений.",
+      "final_overlap_score": 0.75,
+      "final_shared_keywords": [
+        "есть",
+        "изображен",
+        "конвертаци",
+        "меня",
+        "один",
+        "проект"
+      ],
+      "status": "covered_by_final"
+    },
+    {
+      "fragment_index": 6,
+      "expected_fragment": "КОгда я работал в компании AEMDAYS,",
+      "best_queued_index": 10,
+      "best_queued_segment": "Когда я работал в компании AMDase,",
+      "queued_overlap_score": 0.67,
+      "queued_shared_keywords": [
+        "компани",
+        "работ"
+      ],
+      "best_final_index": 1,
+      "best_final_segment": "Когда я работал в компании AMDase, я делал лендинги. очень много лендингов. Так как у лендингов обычно нет сложной логики, то основное влияние на производительность вызывают картинки. Сначала я пользовался бесплатными сервисами. но опирался то в лимит, упирался то в лимит, то в отсутствие гибкости.",
+      "final_overlap_score": 0.67,
+      "final_shared_keywords": [
+        "компани",
+        "работ"
+      ],
+      "status": "covered_by_final"
+    },
+    {
+      "fragment_index": 7,
+      "expected_fragment": "я делал лендинги, очень много лендингов.",
+      "best_queued_index": 13,
+      "best_queued_segment": "очень много лендингов.",
+      "queued_overlap_score": 0.75,
+      "queued_shared_keywords": [
+        "лендинг",
+        "мног",
+        "очен"
+      ],
+      "best_final_index": 1,
+      "best_final_segment": "Когда я работал в компании AMDase, я делал лендинги. очень много лендингов. Так как у лендингов обычно нет сложной логики, то основное влияние на производительность вызывают картинки. Сначала я пользовался бесплатными сервисами. но опирался то в лимит, упирался то в лимит, то в отсутствие гибкости.",
+      "final_overlap_score": 1.0,
+      "final_shared_keywords": [
+        "делал",
+        "лендинг",
+        "мног",
+        "очен"
+      ],
+      "status": "covered_by_final"
+    },
+    {
+      "fragment_index": 8,
+      "expected_fragment": "Так как у лендингов обычно нет сложной логики,",
+      "best_queued_index": 14,
+      "best_queued_segment": "Так как у лендингов обычно нет сложной логики,",
+      "queued_overlap_score": 1.0,
+      "queued_shared_keywords": [
+        "лендинг",
+        "логик",
+        "нет",
+        "обычн",
+        "сложн"
+      ],
+      "best_final_index": 1,
+      "best_final_segment": "Когда я работал в компании AMDase, я делал лендинги. очень много лендингов. Так как у лендингов обычно нет сложной логики, то основное влияние на производительность вызывают картинки. Сначала я пользовался бесплатными сервисами. но опирался то в лимит, упирался то в лимит, то в отсутствие гибкости.",
+      "final_overlap_score": 1.0,
+      "final_shared_keywords": [
+        "лендинг",
+        "логик",
+        "нет",
+        "обычн",
+        "сложн"
+      ],
+      "status": "covered_by_final"
+    },
+    {
+      "fragment_index": 9,
+      "expected_fragment": "то основное влияние на производительность вызывают картинки.",
+      "best_queued_index": 16,
+      "best_queued_segment": "то основное влияние на производительность вызывают картинки.",
+      "queued_overlap_score": 1.0,
+      "queued_shared_keywords": [
+        "влиян",
+        "вызыв",
+        "картинк",
+        "основн",
+        "производительност"
+      ],
+      "best_final_index": 1,
+      "best_final_segment": "Когда я работал в компании AMDase, я делал лендинги. очень много лендингов. Так как у лендингов обычно нет сложной логики, то основное влияние на производительность вызывают картинки. Сначала я пользовался бесплатными сервисами. но опирался то в лимит, упирался то в лимит, то в отсутствие гибкости.",
+      "final_overlap_score": 1.0,
+      "final_shared_keywords": [
+        "влиян",
+        "вызыв",
+        "картинк",
+        "основн",
+        "производительност"
+      ],
+      "status": "covered_by_final"
+    },
+    {
+      "fragment_index": 10,
+      "expected_fragment": "Сначала я пользовался бесплатными сервисами,",
+      "best_queued_index": 17,
+      "best_queued_segment": "Сначала я пользовался бесплатными сервисами.",
+      "queued_overlap_score": 1.0,
+      "queued_shared_keywords": [
+        "бесплатн",
+        "пользов",
+        "сервис",
+        "снач"
+      ],
+      "best_final_index": 1,
+      "best_final_segment": "Когда я работал в компании AMDase, я делал лендинги. очень много лендингов. Так как у лендингов обычно нет сложной логики, то основное влияние на производительность вызывают картинки. Сначала я пользовался бесплатными сервисами. но опирался то в лимит, упирался то в лимит, то в отсутствие гибкости.",
+      "final_overlap_score": 1.0,
+      "final_shared_keywords": [
+        "бесплатн",
+        "пользов",
+        "сервис",
+        "снач"
+      ],
+      "status": "covered_by_final"
+    },
+    {
+      "fragment_index": 11,
+      "expected_fragment": "но упирался то в лимит,",
+      "best_queued_index": 19,
+      "best_queued_segment": "упирался то в лимит,",
+      "queued_overlap_score": 1.0,
+      "queued_shared_keywords": [
+        "лимит",
+        "упир"
+      ],
+      "best_final_index": 1,
+      "best_final_segment": "Когда я работал в компании AMDase, я делал лендинги. очень много лендингов. Так как у лендингов обычно нет сложной логики, то основное влияние на производительность вызывают картинки. Сначала я пользовался бесплатными сервисами. но опирался то в лимит, упирался то в лимит, то в отсутствие гибкости.",
+      "final_overlap_score": 1.0,
+      "final_shared_keywords": [
+        "лимит",
+        "упир"
+      ],
+      "status": "covered_by_final"
+    },
+    {
+      "fragment_index": 12,
+      "expected_fragment": "то в отсутсвие гибкости.",
+      "best_queued_index": null,
+      "best_queued_segment": "",
+      "queued_overlap_score": 0.0,
+      "queued_shared_keywords": [],
+      "best_final_index": null,
+      "best_final_segment": "",
+      "final_overlap_score": 0.0,
+      "final_shared_keywords": [],
+      "status": "missing_before_queue"
+    },
+    {
+      "fragment_index": 13,
+      "expected_fragment": "И я решил создать свой инструмент,",
+      "best_queued_index": 21,
+      "best_queued_segment": "И я решил создать свой инструмент,",
+      "queued_overlap_score": 1.0,
+      "queued_shared_keywords": [
+        "инструмент",
+        "решил",
+        "свой",
+        "созд"
+      ],
+      "best_final_index": 2,
+      "best_final_segment": "И я решил создать свой инструмент, которым активно пользуюсь до сих пор, который помог мне невероятно быстро ускорить работу.",
+      "final_overlap_score": 1.0,
+      "final_shared_keywords": [
+        "инструмент",
+        "решил",
+        "свой",
+        "созд"
+      ],
+      "status": "covered_by_final"
+    },
+    {
+      "fragment_index": 14,
+      "expected_fragment": "которым активно пользуюсь до сих пор,",
+      "best_queued_index": 22,
+      "best_queued_segment": "которым активно пользуюсь до сих пор,",
+      "queued_overlap_score": 1.0,
+      "queued_shared_keywords": [
+        "активн",
+        "которым",
+        "польз",
+        "пор",
+        "сих"
+      ],
+      "best_final_index": 2,
+      "best_final_segment": "И я решил создать свой инструмент, которым активно пользуюсь до сих пор, который помог мне невероятно быстро ускорить работу.",
+      "final_overlap_score": 1.0,
+      "final_shared_keywords": [
+        "активн",
+        "которым",
+        "польз",
+        "пор",
+        "сих"
+      ],
+      "status": "covered_by_final"
+    },
+    {
+      "fragment_index": 15,
+      "expected_fragment": "который помог мне невероятно быстро ускорить работу.",
+      "best_queued_index": 23,
+      "best_queued_segment": "который помог мне невероятно быстро ускорить работу.",
+      "queued_overlap_score": 1.0,
+      "queued_shared_keywords": [
+        "быстр",
+        "котор",
+        "мне",
+        "невероятн",
+        "помог",
+        "работ",
+        "ускор"
+      ],
+      "best_final_index": 2,
+      "best_final_segment": "И я решил создать свой инструмент, которым активно пользуюсь до сих пор, который помог мне невероятно быстро ускорить работу.",
+      "final_overlap_score": 1.0,
+      "final_shared_keywords": [
+        "быстр",
+        "котор",
+        "мне",
+        "невероятн",
+        "помог",
+        "работ",
+        "ускор"
+      ],
+      "status": "covered_by_final"
+    }
+  ],
+  "lost_expected_fragments": [
+    {
+      "fragment_index": 12,
+      "expected_fragment": "то в отсутсвие гибкости.",
+      "best_queued_index": null,
+      "best_queued_segment": "",
+      "queued_overlap_score": 0.0,
+      "queued_shared_keywords": [],
+      "best_final_index": null,
+      "best_final_segment": "",
+      "final_overlap_score": 0.0,
+      "final_shared_keywords": [],
+      "status": "missing_before_queue"
+    }
+  ],
+  "queued_not_covered_by_final": [],
+  "long_tts_segments": [
+    "3.07s",
+    "2.82s",
+    "3.15s"
+  ],
+  "long_translation_gaps": [
+    "3.50s gap before 'In real time.'",
+    "3.67s gap before 'Because my English is weaker than my comfort level.'",
+    "2.29s gap before 'When I was working for AMDase,'",
+    "2.81s gap before 'Since the Landings don't usually have complex logic,'",
+    "2.32s gap before 'At first, I used free services.'",
+    "2.39s gap before 'I've been using it very actively so far,'"
+  ],
+  "metrics": {
+    "queued_segments_count": 24,
+    "translated_segments_count": 23,
+    "final_segments_count": 3,
+    "duplicate_queued_count": 0,
+    "duplicate_translated_count": 0,
+    "semantic_overlap_count": 2,
+    "long_tts_segments_count": 3,
+    "long_translation_gaps_count": 6,
+    "avg_translation_gap_sec": 1.77,
+    "max_translation_gap_sec": 3.667,
+    "avg_tts_duration_sec": 1.873,
+    "max_tts_duration_sec": 3.15,
+    "total_pipeline_time_sec": 42.877,
+    "realtime_factor": 1.065,
+    "expected_word_count": 112,
+    "final_word_count": 113,
+    "word_count_diff": 1,
+    "coverage_ratio": 1.009
+  },
+  "status": "success",
+  "error": null,
+  "log_path": "/media/yaroslav/DATA/Мой переводчик/recordings/benchmarks/ru_to_en/runs/run_2026-04-30_16-28-08/large_simple_text/large_simple_text.log"
+}

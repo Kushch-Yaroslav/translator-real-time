@@ -1,8 +1,0 @@
-01. Hello everyone.
-02. My name is Yaroslav.
-03. I am from Ukraine and I am twenty six years old.
-04. I work as a software engineer.
-05. This is a test of the English to Russian translation pipeline.
-06. Please translate my speech clearly and without long delays.
-07. Short phrase.
-08. This sentence is a little longer so we can test natural pacing and segmentation.
