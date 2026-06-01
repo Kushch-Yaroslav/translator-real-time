@@ -4,12 +4,13 @@ import threading
 import queue
 import re
 import time
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Optional, Callable
 
 import numpy as np
 
-from core.audio.audio_session import AudioSession, AudioSessionConfig
+from core.audio.audio_session import AudioSession, AudioSessionConfig, PlaybackAudioBlock
 from core.audio.chunk_processor import (
     ChunkProcessor,
     ChunkProcessorConfig,
@@ -39,8 +40,54 @@ from core.translation.translation_service import (
 from core.tts.tts_service import TTSService, TTSConfig
 
 
+@dataclass(frozen=True)
+class TTSRequest:
+    text: str
+    samplerate: int
+    source_type: str
+    generation: int = 0
+
+
 class AudioEngine:
     _RU_TO_EN_DEPENDENT_SUFFIX_ADMISSION_FILTER_ENABLED = False
+    RU_TO_EN_SOURCE_GLOSSARY_REPLACEMENTS = (
+        (r"\bперевозчик\b", "переводчик"),
+        (r"\bпэт\s+проект\b", "пет-проект"),
+        (r"\bпедпроект\b", "пет-проект"),
+        (r"\bлайтинги\b", "лендинги"),
+        (r"\bлейтинги\b", "лендинги"),
+        (r"\bлейдинги\b", "лендинги"),
+        (r"\bлейдингов\b", "лендингов"),
+        (r"\bлайндинги\b", "лендинги"),
+        (r"\bландинги\b", "лендинги"),
+        (r"\bлэндинги\b", "лендинги"),
+        (r"\bмодальные\s+окна\b", "modal windows"),
+        (r"\bмодальными\s+окнами\b", "modal windows"),
+        (r"\bмодального\s+окна\b", "modal window"),
+        (r"\bререндеры\b", "re-renders"),
+        (r"\bререндеров\b", "re-renders"),
+        (r"\bфронтенд\b", "frontend"),
+        (r"\bфронт-энд\b", "frontend"),
+        (r"\bфронтенде\b", "frontend"),
+        (r"\bфронт-энде\b", "frontend"),
+        (r"\bбекенд\b", "backend"),
+        (r"\bбэкенд\b", "backend"),
+        (r"\bbackend\s+api\b", "backend API"),
+        (r"\bкорректное\s+состояние\b", "корректный state"),
+        (r"\bстарое\s+состояние\b", "старый state"),
+        (r"\bбольшое\s+количество\s+состояний\b", "большое количество states"),
+        (r"\bбольшим\s+количеством\s+состояний\b", "большим количеством states"),
+        (r"\bверстка\b", "layout"),
+        (r"\bвёрстка\b", "layout"),
+        (r"\bверстки\b", "layout"),
+        (r"\bвёрстки\b", "layout"),
+    )
+    RU_TO_EN_CONTEXTUAL_GLOSSARY_REPLACEMENTS = (
+        (
+            ("еще один", "ещё один"),
+            (r"\bподпроект\b", "пет-проект"),
+        ),
+    )
     _RU_TO_EN_CONTEXT_SENSITIVE_STARTERS = (
         "как",
         "чтобы",
@@ -140,11 +187,13 @@ class AudioEngine:
         self._tts_ready_chunks_count: int = 0
         self._last_stt_activity_at: float = 0.0
 
-        self.final_text_queue: queue.Queue[str] = queue.Queue(maxsize=32)
+        self.final_text_queue: queue.Queue[tuple[str, str]] = queue.Queue(maxsize=32)
         self.low_latency_text_queue: queue.Queue[tuple[str, bool, int]] = queue.Queue(maxsize=32)
-        self.tts_text_queue: queue.Queue[tuple[str, int]] = queue.Queue(maxsize=64)
+        self.tts_text_queue: queue.Queue[TTSRequest] = queue.Queue(maxsize=64)
         self.tts_worker_thread: Optional[threading.Thread] = None
         self._tts_stop_event = threading.Event()
+        self._tts_item_counter = 0
+        self._tts_item_lock = threading.Lock()
         self._pending_final_text: str = ""
         self._pending_final_updated_at: float = 0.0
         self._pending_final_is_partial: bool = False
@@ -708,14 +757,14 @@ class AudioEngine:
                 continue
 
             try:
-                text = self.final_text_queue.get(timeout=0.2)
+                text, source_type = self.final_text_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
 
             if not self.running:
                 break
 
-            self._process_final_text(text)
+            self._process_final_text(text, source_type=source_type)
 
     def _final_debounce_loop(self) -> None:
         while self.running:
@@ -733,6 +782,7 @@ class AudioEngine:
                 continue
 
             ready_text = ""
+            ready_source_type = "final"
 
             with self._pending_final_lock:
                 if self._pending_final_text:
@@ -742,19 +792,20 @@ class AudioEngine:
                         debounce_sec = self._get_partial_merge_window_sec()
                     if age >= debounce_sec:
                         ready_text = self._pending_final_text
+                        ready_source_type = "partial" if self._pending_final_is_partial else "final"
                         self._pending_final_text = ""
                         self._pending_final_updated_at = 0.0
                         self._pending_final_is_partial = False
 
             if ready_text:
-                self._enqueue_final_text(ready_text)
+                self._enqueue_final_text(ready_text, source_type=ready_source_type)
                 continue
 
             self._maybe_emit_stable_partial()
 
             time.sleep(0.05)
 
-    def _process_final_text(self, text: str) -> None:
+    def _process_final_text(self, text: str, *, source_type: str = "final") -> None:
         if not self.running or self._translation_paused:
             return
 
@@ -812,7 +863,7 @@ class AudioEngine:
         self._remember_translated_text_for_compare(translated_text)
         self._remember_translated_source_text_for_compare(text)
         self._log(f"TRANSLATED: {translated_text}")
-        self._enqueue_tts_text(translated_text)
+        self._enqueue_tts_text(translated_text, source_type=source_type)
 
     def _translate_ru_to_en_with_optional_context(
         self,
@@ -928,25 +979,14 @@ class AudioEngine:
             return source_text
 
         normalized = self._normalize_compare_text(source_text)
-        replacements = (
-            (r"\bперевозчик\b", "переводчик"),
-            (r"\bпэт\s+проект\b", "пет-проект"),
-            (r"\bпедпроект\b", "пет-проект"),
-            (r"\bлайтинги\b", "лендинги"),
-            (r"\bлейтинги\b", "лендинги"),
-            (r"\bлейдинги\b", "лендинги"),
-            (r"\bлейдингов\b", "лендингов"),
-            (r"\bлайндинги\b", "лендинги"),
-            (r"\bландинги\b", "лендинги"),
-            (r"\bлэндинги\b", "лендинги"),
-        )
-
         result = source_text
-        for pattern, replacement in replacements:
+        for pattern, replacement in self.RU_TO_EN_SOURCE_GLOSSARY_REPLACEMENTS:
             result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
 
-        if "еще один" in normalized or "ещё один" in normalized:
-            result = re.sub(r"\bподпроект\b", "пет-проект", result, flags=re.IGNORECASE)
+        for context_markers, replacement in self.RU_TO_EN_CONTEXTUAL_GLOSSARY_REPLACEMENTS:
+            pattern, replacement_text = replacement
+            if any(marker in normalized for marker in context_markers):
+                result = re.sub(pattern, replacement_text, result, flags=re.IGNORECASE)
 
         return self._normalize_text(result)
 
@@ -954,6 +994,7 @@ class AudioEngine:
         return self._normalize_compare_text(text) in {
             "сначала я пользовался бесплатным",
             "это проект для конвертации",
+            "modal windows и интеграторами",
         }
 
     def _find_ru_to_en_partial_rewind_suffix_match(self, candidate: str) -> str:
@@ -1054,14 +1095,27 @@ class AudioEngine:
 
         return ""
 
-    def _enqueue_tts_text(self, text: str) -> None:
+    def _enqueue_tts_text(
+        self,
+        text: str,
+        *,
+        source_type: str = "final",
+        generation: int = 0,
+    ) -> None:
         if not self.running or self._translation_paused:
             return
         text = self._normalize_text(text)
         if not text:
             return
         try:
-            self.tts_text_queue.put_nowait((text, self.current_samplerate))
+            self.tts_text_queue.put_nowait(
+                TTSRequest(
+                    text=text,
+                    samplerate=self.current_samplerate,
+                    source_type=source_type,
+                    generation=generation,
+                )
+            )
         except queue.Full:
             self._handle_error("TTS text queue is full, dropping chunk")
 
@@ -1070,51 +1124,112 @@ class AudioEngine:
             if not self.running:
                 break
             try:
-                text, samplerate = self.tts_text_queue.get(timeout=0.2)
+                request = self.tts_text_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
 
             if not self.running or self._translation_paused:
                 continue
 
-            text = self._collect_adjacent_tts_text(text)
-            if not text:
+            request = self._coerce_tts_request(request)
+            request = self._collect_adjacent_tts_request(request)
+            if not request.text:
                 continue
 
             tts_service = self.tts_service
             if tts_service is None:
                 continue
 
-            tts_started_at = time.perf_counter()
-            try:
-                tts_audio = tts_service.synthesize(
-                    text,
-                    target_samplerate=samplerate,
+            text_chunks = self._split_tts_text_chunks(request.text, request.source_type)
+            for chunk_index, chunk_text in enumerate(text_chunks):
+                if not self.running or self._translation_paused:
+                    break
+
+                item_id = self._next_tts_item_id()
+                item_created_at = time.monotonic()
+                self._log(
+                    "TTS item created: "
+                    f"id={item_id} sourceType={request.source_type} status=queued "
+                    f"textLen={len(chunk_text)} chunk={chunk_index + 1}/{len(text_chunks)} "
+                    f"generation={request.generation} text={chunk_text}"
                 )
-            except Exception as error:
-                self._handle_error(f"TTS error: {error}")
-                continue
 
-            tts_elapsed = time.perf_counter() - tts_started_at
-            self._log(f"TTS time: {tts_elapsed:.3f} sec")
+                tts_started_at = time.perf_counter()
+                try:
+                    tts_audio = tts_service.synthesize(
+                        chunk_text,
+                        target_samplerate=request.samplerate,
+                    )
+                except Exception as error:
+                    self._handle_error(f"TTS error: {error}")
+                    continue
 
-            duration = (
-                tts_audio.shape[0] / float(self.current_samplerate)
-                if tts_audio.size > 0
-                else 0.0
+                tts_elapsed = time.perf_counter() - tts_started_at
+                self._log(
+                    f"TTS time: {tts_elapsed:.3f} sec "
+                    f"id={item_id} sourceType={request.source_type} textLen={len(chunk_text)}"
+                )
+
+                duration = (
+                    tts_audio.shape[0] / float(self.current_samplerate)
+                    if tts_audio.size > 0
+                    else 0.0
+                )
+                self._log(
+                    f"TTS audio ready: {duration:.2f} sec "
+                    f"id={item_id} sourceType={request.source_type} textLen={len(chunk_text)}"
+                )
+                self._tts_ready_chunks_count += 1
+                queued_blocks = self._enqueue_tts_audio(
+                    tts_audio,
+                    chunk_text,
+                    item_id=item_id,
+                    source_type=request.source_type,
+                    created_at=item_created_at,
+                    generation=request.generation,
+                )
+                queue_size = self.session.output_queue.qsize() if self.session is not None else 0
+                item_age = time.monotonic() - item_created_at
+                self._log(
+                    "TTS item queued: "
+                    f"id={item_id} sourceType={request.source_type} status=queued "
+                    f"textLen={len(chunk_text)} queueSize={queue_size} "
+                    f"itemAge={item_age:.3f}s blocks={queued_blocks} text={chunk_text}"
+                )
+                self._log(
+                    f"PLAYBACK queued: {chunk_text} "
+                    f"id={item_id} sourceType={request.source_type} "
+                    f"textLen={len(chunk_text)} queueSize={queue_size}"
+                )
+
+    def _coerce_tts_request(self, request: TTSRequest | tuple) -> TTSRequest:
+        if isinstance(request, TTSRequest):
+            return request
+        if isinstance(request, tuple) and len(request) >= 2:
+            return TTSRequest(
+                text=str(request[0]),
+                samplerate=int(request[1]),
+                source_type="final",
             )
-            self._log(f"TTS audio ready: {duration:.2f} sec")
-            self._tts_ready_chunks_count += 1
-            self._log(f"PLAYBACK queued: {text}")
-            self._enqueue_tts_audio(tts_audio, text)
+        return TTSRequest(text="", samplerate=self.current_samplerate, source_type="final")
 
-    def _collect_adjacent_tts_text(self, first_text: str) -> str:
-        first_text = self._normalize_text(first_text)
+    def _collect_adjacent_tts_request(self, first_request: TTSRequest) -> TTSRequest:
+        first_text = self._normalize_text(first_request.text)
         if not first_text:
-            return ""
+            return TTSRequest(
+                text="",
+                samplerate=first_request.samplerate,
+                source_type=first_request.source_type,
+                generation=first_request.generation,
+            )
 
-        if not self._should_wait_for_tts_continuation(first_text):
-            return first_text
+        if first_request.source_type != "final" or not self._should_wait_for_tts_continuation(first_text):
+            return TTSRequest(
+                text=first_text,
+                samplerate=first_request.samplerate,
+                source_type=first_request.source_type,
+                generation=first_request.generation,
+            )
 
         merged_parts = [first_text]
         started_at = time.monotonic()
@@ -1125,17 +1240,24 @@ class AudioEngine:
         while len(merged_parts) < max_parts and (time.monotonic() - started_at) < max_wait_sec:
             timeout = max(0.0, max_wait_sec - (time.monotonic() - started_at))
             try:
-                next_text, _samplerate = self.tts_text_queue.get(timeout=timeout)
+                next_request = self._coerce_tts_request(self.tts_text_queue.get(timeout=timeout))
             except queue.Empty:
                 break
 
-            next_text = self._normalize_text(next_text)
+            next_text = self._normalize_text(next_request.text)
             if not next_text:
                 continue
 
+            if next_request.source_type != first_request.source_type:
+                try:
+                    self.tts_text_queue.put_nowait(next_request)
+                except queue.Full:
+                    self._handle_error("TTS text queue is full, dropping deferred chunk")
+                break
+
             if not self._should_merge_tts_continuation(merged_parts[0], next_text):
                 try:
-                    self.tts_text_queue.put_nowait((next_text, self.current_samplerate))
+                    self.tts_text_queue.put_nowait(next_request)
                 except queue.Full:
                     self._handle_error("TTS text queue is full, dropping deferred chunk")
                 break
@@ -1143,7 +1265,7 @@ class AudioEngine:
             candidate = " ".join(merged_parts + [next_text]).strip()
             if len(candidate) > max_chars:
                 try:
-                    self.tts_text_queue.put_nowait((next_text, self.current_samplerate))
+                    self.tts_text_queue.put_nowait(next_request)
                 except queue.Full:
                     self._handle_error("TTS text queue is full, dropping deferred chunk")
                 break
@@ -1154,7 +1276,110 @@ class AudioEngine:
         if len(merged_parts) > 1:
             self._log(f"TTS continuation merged: {len(merged_parts)} chunks")
             self._log(f"PLAYBACK merged: {merged_parts[0]} + {merged_parts[1]}")
-        return merged_text
+        return TTSRequest(
+            text=merged_text,
+            samplerate=first_request.samplerate,
+            source_type=first_request.source_type,
+            generation=first_request.generation,
+        )
+
+    def _next_tts_item_id(self) -> str:
+        with self._tts_item_lock:
+            self._tts_item_counter += 1
+            return f"tts-{self._tts_item_counter}"
+
+    def _split_tts_text_chunks(self, text: str, source_type: str) -> list[str]:
+        text = self._normalize_text(text)
+        if not text:
+            return []
+
+        max_chars = 180 if source_type == "final" else 140
+        if len(text) <= max_chars:
+            return [text]
+
+        completed_sentences, trailing_fragment = self._split_sentences(text)
+        sentence_parts = completed_sentences[:]
+        if trailing_fragment:
+            sentence_parts.append(trailing_fragment)
+
+        if not sentence_parts:
+            sentence_parts = [text]
+
+        chunks: list[str] = []
+        current = ""
+
+        for part in sentence_parts:
+            part = self._normalize_text(part)
+            if not part:
+                continue
+
+            if len(part) > max_chars:
+                if current:
+                    chunks.append(current)
+                    current = ""
+                chunks.extend(self._split_long_tts_part(part, max_chars=max_chars))
+                continue
+
+            candidate = f"{current} {part}".strip() if current else part
+            if len(candidate) <= max_chars:
+                current = candidate
+            else:
+                if current:
+                    chunks.append(current)
+                current = part
+
+        if current:
+            chunks.append(current)
+
+        return chunks or [text]
+
+    @staticmethod
+    def _split_long_tts_part(part: str, *, max_chars: int) -> list[str]:
+        part = AudioEngine._normalize_text(part)
+        if len(part) <= max_chars:
+            return [part] if part else []
+
+        fragments = [
+            fragment.strip()
+            for fragment in re.split(r"(?<=[,;:])\s+", part)
+            if fragment.strip()
+        ]
+        if len(fragments) <= 1:
+            fragments = part.split()
+
+        chunks: list[str] = []
+        current = ""
+        for fragment in fragments:
+            candidate = f"{current} {fragment}".strip() if current else fragment
+            if len(candidate) <= max_chars:
+                current = candidate
+                continue
+
+            if current:
+                chunks.append(current)
+                current = ""
+
+            if len(fragment) <= max_chars:
+                current = fragment
+                continue
+
+            words = fragment.split()
+            word_chunk = ""
+            for word in words:
+                word_candidate = f"{word_chunk} {word}".strip() if word_chunk else word
+                if len(word_candidate) <= max_chars:
+                    word_chunk = word_candidate
+                else:
+                    if word_chunk:
+                        chunks.append(word_chunk)
+                    word_chunk = word
+            if word_chunk:
+                current = word_chunk
+
+        if current:
+            chunks.append(current)
+
+        return chunks
 
     def _should_wait_for_tts_continuation(self, text: str) -> bool:
         if self._tts_ready_chunks_count == 0:
@@ -1237,17 +1462,26 @@ class AudioEngine:
 
         return self.processor.process(chunk)
 
-    def _enqueue_tts_audio(self, audio: np.ndarray, text: str = "") -> None:
+    def _enqueue_tts_audio(
+        self,
+        audio: np.ndarray,
+        text: str = "",
+        *,
+        item_id: str,
+        source_type: str,
+        created_at: float,
+        generation: int = 0,
+    ) -> int:
         session = self.session
         if session is None or not self.running or session.stopping:
-            return
+            return 0
 
         if audio.size == 0:
-            return
+            return 0
 
         audio = self._trim_tts_audio_silence(audio)
         if audio.size == 0:
-            return
+            return 0
 
         if audio.ndim == 1:
             audio = audio.reshape(-1, 1)
@@ -1258,11 +1492,12 @@ class AudioEngine:
         total_blocks = max(1, (total_frames + self.current_blocksize - 1) // self.current_blocksize)
         offset = 0
         block_index = 0
+        queued_blocks = 0
 
         while self.running and offset < total_frames:
             session = self.session
             if session is None or session.stopping:
-                return
+                return queued_blocks
 
             piece = audio[offset: offset + self.current_blocksize]
 
@@ -1275,21 +1510,28 @@ class AudioEngine:
 
             try:
                 session.output_queue.put(
-                    (
-                        piece.astype(np.float32, copy=False),
-                        text,
-                        block_index == 0,
-                        block_index == total_blocks - 1,
+                    PlaybackAudioBlock(
+                        audio=piece.astype(np.float32, copy=False),
+                        item_id=item_id,
+                        text=text,
+                        source_type=source_type,
+                        created_at=created_at,
+                        block_index=block_index,
+                        total_blocks=total_blocks,
+                        generation=generation,
                     ),
                     timeout=0.2,
                 )
             except queue.Full:
                 if not self.running:
-                    return
+                    return queued_blocks
                 continue
 
             offset += self.current_blocksize
             block_index += 1
+            queued_blocks += 1
+
+        return queued_blocks
 
     def _trim_tts_audio_silence(self, audio: np.ndarray) -> np.ndarray:
         if audio.size == 0:
@@ -1322,10 +1564,16 @@ class AudioEngine:
             if queued_audio_seconds <= self.app_config.tts.max_queue_latency_sec:
                 return
 
-        cleared_blocks = session.clear_output_queue(reason="stale_tts_audio_queue")
+        cleared = session.clear_output_queue(
+            reason="stale_tts_audio_queue",
+            preserve_final=True,
+            preserve_playing=True,
+        )
         self._log(
             "Dropped stale TTS audio queue "
-            f"({queued_audio_seconds:.2f} sec, blocks={cleared_blocks})"
+            f"({queued_audio_seconds:.2f} sec, clearedBlocks={cleared.cleared_blocks} "
+            f"skippedItems={cleared.skipped_items} preservedBlocks={cleared.preserved_blocks} "
+            f"preservedItems={cleared.preserved_items} reason=stale_partial_or_overflow)"
         )
 
     def _prepare_chunk_for_stt(self, chunk: np.ndarray) -> np.ndarray:
@@ -1447,7 +1695,13 @@ class AudioEngine:
 
             self._pending_final_updated_at = time.monotonic()
 
-    def _enqueue_final_text(self, text: str, source_text: str | None = None) -> None:
+    def _enqueue_final_text(
+        self,
+        text: str,
+        source_text: str | None = None,
+        *,
+        source_type: str = "final",
+    ) -> None:
         normalized_incremental = self._normalize_compare_text(text)
         normalized_last_enqueued = self._normalize_compare_text(self.last_enqueued_final_text)
 
@@ -1460,7 +1714,7 @@ class AudioEngine:
             return
 
         try:
-            self.final_text_queue.put_nowait(text)
+            self.final_text_queue.put_nowait((text, source_type))
             self.last_enqueued_final_text = text
             emitted_source = source_text if source_text is not None else text
             self.last_emitted_source_text = self._merge_final_texts(
@@ -2011,7 +2265,7 @@ class AudioEngine:
                 self._log(f"LOWLAT sentence queued: {normalized_sentence}")
                 self._enqueue_low_latency_text(
                     normalized_sentence,
-                    is_final=False,
+                    is_final=is_final,
                     generation=self._low_latency_generation,
                 )
                 emitted_any = True
@@ -2028,7 +2282,7 @@ class AudioEngine:
                 self._log(f"LOWLAT sentence queued: {normalized_sentence}")
                 self._enqueue_low_latency_text(
                     normalized_sentence,
-                    is_final=False,
+                    is_final=is_final,
                     generation=self._low_latency_generation,
                 )
                 emitted_any = True
@@ -2115,7 +2369,7 @@ class AudioEngine:
             self._log("LOWLAT skipped: stale chunk")
             return
 
-        self._process_final_text(text)
+        self._process_final_text(text, source_type="final" if is_final else "partial")
         self._low_latency_emitted_text = self._merge_final_texts(
             self._low_latency_emitted_text,
             text,
@@ -2407,7 +2661,11 @@ class AudioEngine:
             self._log(
                 f"{'FINAL' if is_final else 'PARTIAL'} sentence queued: {normalized_sentence}"
             )
-            self._enqueue_final_text(normalized_sentence, source_text=normalized_sentence)
+            self._enqueue_final_text(
+                normalized_sentence,
+                source_text=normalized_sentence,
+                source_type="final" if is_final else "partial",
+            )
             emitted_any = True
 
         if is_final:
@@ -2425,7 +2683,11 @@ class AudioEngine:
                     and len(trailing_fragment.split()) >= sentence_min_words
                 ):
                     self._log(f"FINAL tail queued: {trailing_fragment}")
-                    self._enqueue_final_text(trailing_fragment, source_text=trailing_fragment)
+                    self._enqueue_final_text(
+                        trailing_fragment,
+                        source_text=trailing_fragment,
+                        source_type="final",
+                    )
                     emitted_any = True
 
         if not emitted_any:
@@ -3395,12 +3657,18 @@ class AudioEngine:
             if not pending_items:
                 return False
 
-            last_text, last_samplerate = pending_items[-1]
+            last_request = self._coerce_tts_request(pending_items[-1])
+            last_text = last_request.text
             last_translated_norm = self._normalize_translated_compare_text(last_text)
             if current_translated_norm != last_translated_norm:
                 return False
 
-            pending_items[-1] = (text, last_samplerate)
+            pending_items[-1] = TTSRequest(
+                text=text,
+                samplerate=last_request.samplerate,
+                source_type=last_request.source_type,
+                generation=last_request.generation,
+            )
             return True
 
     def _should_skip_strict_short_translated_fragment(

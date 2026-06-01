@@ -27,6 +27,7 @@ class TranslationService:
         "arasan": "Alyssa",
         "arassa": "Alyssa",
         "jeremy": "Jeremy",
+        "oli": "Oli",
         "yaroslav": "Yaroslav",
         "jaroslav": "Yaroslav",
         "scott": "Scott",
@@ -35,6 +36,7 @@ class TranslationService:
     _KNOWN_EN_RU_NAME_TRANSLATIONS = {
         "Alyssa": "Алисса",
         "Jeremy": "Джереми",
+        "Oli": "Оли",
         "Yaroslav": "Ярослав",
         "Scott": "Скотт",
         "Tiff": "Тифф",
@@ -134,8 +136,27 @@ class TranslationService:
                 text = text.replace(source, target)
 
             text = self._collapse_repeated_en_clause(text)
+        elif self.config.direction == TranslationDirection.EN_TO_RU:
+            text = self._postprocess_en_ru_mixed_intro(text)
 
         return " ".join(text.split())
+
+    def _postprocess_en_ru_mixed_intro(self, text: str) -> str:
+        compact = " ".join((text or "").strip().split())
+        if not compact:
+            return ""
+
+        match = re.fullmatch(
+            r"(?is)привет,\s+i'?m\s+([a-z][a-z' -]*?)\s+founder\s+and\s+ceo\s+of\s+([a-z][a-z0-9' -]*)[.!?]?",
+            compact,
+        )
+        if not match:
+            return compact
+
+        raw_name = match.group(1).strip(" ,.!?")
+        raw_company = match.group(2).strip(" ,.!?")
+        company = self._normalize_known_company_name(raw_company)
+        return f"Привет, я {self._translate_known_name_to_ru(raw_name)}, основатель и CEO {company}."
 
     @staticmethod
     def _collapse_repeated_en_clause(text: str) -> str:
@@ -191,6 +212,16 @@ class TranslationService:
         if not normalized:
             return ""
 
+        founder_ceo_match = re.fullmatch(
+            r"(?:hey|hi|hello)\s+im\s+([a-zа-я][a-zа-я' -]*?)\s+founder\s+and\s+ceo\s+of\s+([a-zа-я][a-zа-я0-9' -]*)",
+            normalized,
+        )
+        if founder_ceo_match:
+            raw_name = founder_ceo_match.group(1).strip(" ,.!?")
+            raw_company = founder_ceo_match.group(2).strip(" ,.!?")
+            company = self._normalize_known_company_name(raw_company)
+            return f"Привет, я {self._translate_known_name_to_ru(raw_name)}, основатель и CEO {company}."
+
         greeting_match = re.fullmatch(r"(?:hi|hello|hey|yo)\s+([a-zа-я][a-zа-я' -]*)", normalized)
         if greeting_match:
             raw_name = " ".join(greeting_match.group(1).split()).strip(" ,.!?")
@@ -235,6 +266,18 @@ class TranslationService:
             return compact.title()
 
         return compact
+
+    @staticmethod
+    def _normalize_known_company_name(raw_company: str) -> str:
+        compact = " ".join((raw_company or "").strip().split()).strip(" ,.!?")
+        if not compact:
+            return ""
+
+        normalized = TranslationService._normalize_compare_text(compact)
+        known_companies = {
+            "microone": "MicroOne",
+        }
+        return known_companies.get(normalized, compact)
 
     def _resolve_model_name(self, direction: TranslationDirection) -> str:
         if direction == TranslationDirection.EN_TO_RU:
