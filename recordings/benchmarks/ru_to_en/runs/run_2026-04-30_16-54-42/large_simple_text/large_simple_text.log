@@ -1,0 +1,281 @@
+[  0.000s] Loading translation model: RU -> EN ...
+[  3.365s] Loading TTS voice: en_US-ryan-medium ...
+[ 11.037s] Runtime prewarm started
+[ 11.037s] Runtime prewarm ready
+[ 12.153s] LOWLAT sentence queued: Всем привет!
+[ 12.400s] PARTIAL sanitized: removed hallucinated tail (Всем привет, меня зовут... -> Всем привет, меня зовут. ..)
+[ 13.405s] Translation time: 1.252 sec
+[ 13.405s] TRANSLATED: Hey, everybody!
+[ 13.438s] LOWLAT phrase_seen relaxed admit: меня зовут Ярослав,
+[ 13.438s] LOWLAT sentence queued: меня зовут Ярослав,
+[ 13.716s] Translation time: 0.278 sec
+[ 13.716s] TRANSLATED: My name is Jaroslav,
+[ 14.280s] LOWLAT phrase_seen relaxed admit: мне 26 лет,
+[ 14.280s] LOWLAT sentence queued: мне 26 лет,
+[ 14.395s] TTS time: 0.991 sec
+[ 14.395s] TTS audio ready: 1.16 sec
+[ 14.395s] PLAYBACK queued: Hey, everybody!
+[ 14.554s] Translation time: 0.274 sec
+[ 14.554s] TRANSLATED: I'm 26 years old,
+[ 14.554s] TTS continuation merged: 2 chunks
+[ 14.554s] PLAYBACK merged: My name is Jaroslav, + I'm 26 years old,
+[ 14.837s] TTS time: 0.283 sec
+[ 14.837s] TTS audio ready: 2.59 sec
+[ 14.837s] PLAYBACK queued: My name is Jaroslav, I'm 26 years old,
+[ 16.160s] PARTIAL sanitized: removed hallucinated tail (Всем привет, меня зовут Ярослав, мне 26 лет, я из Украины. Сейчас мы общаемся через... -> Всем привет, меня зовут Ярослав, мне 26 лет, я из Украины. Сейчас мы общаемся через. ..)
+[ 16.160s] LOWLAT sentence queued: я из Украины.
+[ 16.334s] Translation time: 0.173 sec
+[ 16.334s] TRANSLATED: I'm from Ukraine.
+[ 16.530s] TTS time: 0.196 sec
+[ 16.530s] TTS audio ready: 0.89 sec
+[ 16.530s] PLAYBACK queued: I'm from Ukraine.
+[ 17.456s] PARTIAL sanitized: removed hallucinated tail (Меня зовут Ярослав, мне 26 лет, я из Украины. Сейчас мы общаемся через мой переводчик в реально... -> Меня зовут Ярослав, мне 26 лет, я из Украины. Сейчас мы общаемся через мой переводчик в реально. ..)
+[ 17.914s] LOWLAT sentence queued: Сейчас мы общаемся через мой переводчик в реальном времени.
+[ 18.229s] Translation time: 0.315 sec
+[ 18.229s] TRANSLATED: Now we're talking through my translator in real time.
+[ 18.396s] TTS time: 0.166 sec
+[ 18.396s] TTS audio ready: 2.53 sec
+[ 18.396s] PLAYBACK queued: Now we're talking through my translator in real time.
+[ 20.035s] PARTIAL sanitized: removed hallucinated tail (Сейчас мы общаемся через мой переводчик в реальном времени. Я его создал для помощи в преодолении... -> Сейчас мы общаемся через мой переводчик в реальном времени. Я его создал для помощи в преодолении. ..)
+[ 20.706s] PARTIAL sanitized: removed hallucinated tail (Мы общаемся через мой переводчик в реальном времени. Я его создал для помощи в преодолении языкового... -> Мы общаемся через мой переводчик в реальном времени. Я его создал для помощи в преодолении языкового. ..)
+[ 21.374s] LOWLAT sentence queued: Я его создал для помощи в преодолении языкового барьера.
+[ 21.695s] Translation time: 0.321 sec
+[ 21.695s] TRANSLATED: I created it to help overcome the language barrier.
+[ 21.716s] LOWLAT allowed suspicious fragment: так как мы не можем использовать.
+[ 21.861s] TTS time: 0.166 sec
+[ 21.861s] TTS audio ready: 2.47 sec
+[ 21.861s] PLAYBACK queued: I created it to help overcome the language barrier.
+[ 21.875s] PARTIAL sanitized: removed hallucinated tail (Я его создал для помощи в преодолении языкового барьера, так как мы... -> Я его создал для помощи в преодолении языкового барьера, так как мы. ..)
+[ 21.875s] LOWLAT allowed suspicious fragment: так как мы.
+[ 22.337s] LOWLAT allowed suspicious fragment: так как мой английский славянный язык не использует.
+[ 22.484s] LOWLAT allowed suspicious fragment: так как мой английский слабее.
+[ 22.633s] LOWLAT allowed suspicious fragment: так как мой английский слабее.
+[ 22.634s] LOWLAT sentence queued: так как мой английский слабее.
+[ 22.791s] Translation time: 0.157 sec
+[ 22.791s] TRANSLATED: Because my English is weaker.
+[ 23.241s] TTS time: 0.209 sec
+[ 23.241s] TTS audio ready: 1.35 sec
+[ 23.241s] PLAYBACK queued: Because my English is weaker.
+[ 23.929s] LOWLAT skipped source contained duplicate: для помощи в преодолении языкового барьера, ~= Я его создал для помощи в преодолении языкового барьера.
+[ 23.929s] LOWLAT allowed suspicious fragment: так как в английский слабее уровня комфортного общения.
+[ 24.245s] LOWLAT skipped source contained duplicate: помощи в преодолении языкового барьера, ~= Я его создал для помощи в преодолении языкового барьера.
+[ 24.245s] LOWLAT allowed suspicious fragment: так как в английский слабее уровня комфортного общения.
+[ 24.558s] LOWLAT sentence queued: уровня комфортного общения.
+[ 24.720s] Translation time: 0.161 sec
+[ 24.720s] TRANSLATED: the level of comfortable communication.
+[ 24.882s] TTS time: 0.162 sec
+[ 24.882s] TTS audio ready: 1.68 sec
+[ 24.882s] PLAYBACK queued: the level of comfortable communication.
+[ 26.302s] RU2EN source normalized: Также у меня есть еще один пэт проект. -> Также у меня есть еще один пет-проект.
+[ 26.920s] RU2EN source normalized: Также у меня есть еще один пэт проект. -> Также у меня есть еще один пет-проект.
+[ 26.920s] LOWLAT phrase_seen relaxed admit: Также у меня есть еще один пет-проект.
+[ 26.920s] LOWLAT sentence queued: Также у меня есть еще один пет-проект.
+[ 27.109s] PARTIAL sanitized: removed hallucinated tail (диски слабее уровня комфортного общения. Также у меня есть еще один пэт проект. Это проект... -> диски слабее уровня комфортного общения. Также у меня есть еще один пэт проект. Это проект. ..)
+[ 27.109s] RU2EN source normalized: Также у меня есть еще один пэт проект. -> Также у меня есть еще один пет-проект.
+[ 27.111s] Translation time: 0.190 sec
+[ 27.111s] TRANSLATED: I also have another pet project.
+[ 27.348s] TTS time: 0.235 sec
+[ 27.348s] TTS audio ready: 1.73 sec
+[ 27.348s] PLAYBACK queued: I also have another pet project.
+[ 27.450s] PARTIAL sanitized: removed hallucinated tail (слабее уровня комфортного общения. Также у меня есть еще один пэт проект. Это проект для... -> слабее уровня комфортного общения. Также у меня есть еще один пэт проект. Это проект для. ..)
+[ 27.773s] RU2EN source normalized: Также у меня есть еще один пэт проект. -> Также у меня есть еще один пет-проект.
+[ 27.773s] LOWLAT skipped known weak draft: Это проект для конвертации.
+[ 27.924s] RU2EN source normalized: Также у меня есть еще один пэт проект. -> Также у меня есть еще один пет-проект.
+[ 27.924s] LOWLAT skipped known weak draft: Это проект для конвертации.
+[ 28.229s] RU2EN source normalized: Также у меня есть еще один пэт проект. -> Также у меня есть еще один пет-проект.
+[ 28.394s] RU2EN source normalized: Также у меня есть еще один пэт проект, -> Также у меня есть еще один пет-проект,
+[ 28.540s] RU2EN source normalized: Также у меня есть еще один пэт проект. -> Также у меня есть еще один пет-проект.
+[ 28.827s] RU2EN source normalized: пэт проект. -> пет-проект.
+[ 29.274s] FINAL raw: Также у меня есть еще один пэт проект. Это проект для конвертации изображений.
+[ 29.274s] RU2EN source normalized: Также у меня есть еще один пэт проект. -> Также у меня есть еще один пет-проект.
+[ 29.275s] LOWLAT sentence queued: Это проект для конвертации изображений.
+[ 29.277s] FINAL: Всем привет! меня зовут Ярослав, мне 26 лет, я из Украины. Сейчас мы общаемся через мой переводчик в реальном времени. Я его создал для помощи в преодолении языкового барьера. так как мой английский слабее. уровня комфортного общения. Также у меня есть еще один пет-проект. Это проект для конвертации изображений.
+[ 29.334s] Translation time: 0.057 sec
+[ 29.334s] TRANSLATED: It's a project to convert images.
+[ 29.406s] TTS time: 0.072 sec
+[ 29.406s] TTS audio ready: 1.73 sec
+[ 29.406s] PLAYBACK queued: It's a project to convert images.
+[ 29.898s] PARTIAL sanitized: removed hallucinated tail (Когда я работал в... -> Когда я работал в. ..)
+[ 31.270s] PARTIAL sanitized: removed hallucinated tail (Когда я работал в компании AMDase, я... -> Когда я работал в компании AMDase, я. ..)
+[ 31.271s] LOWLAT sentence queued: Когда я работал в компании AMDase,
+[ 31.430s] PARTIAL sanitized: removed hallucinated tail (Когда я работал в компании AMDs, я... -> Когда я работал в компании AMDs, я. ..)
+[ 31.570s] PARTIAL sanitized: removed hallucinated tail (Когда я работал в компании AMDs, я делал... -> Когда я работал в компании AMDs, я делал. ..)
+[ 31.570s] LOWLAT sentence queued: Когда я работал в компании AMDs,
+[ 31.681s] Translation time: 0.410 sec
+[ 31.681s] TRANSLATED: When I was working for AMDase,
+[ 31.990s] Translation time: 0.309 sec
+[ 31.990s] TRANSLATED skipped same-prefix retry: When I was working for AMDs, ~= When I was working for AMDase,
+[ 32.113s] TTS time: 0.191 sec
+[ 32.113s] TTS audio ready: 1.66 sec
+[ 32.113s] PLAYBACK queued: When I was working for AMDase,
+[ 32.419s] RU2EN source normalized: я делал лейдинги. -> я делал лендинги.
+[ 33.395s] RU2EN source normalized: я делал лейдинги. -> я делал лендинги.
+[ 34.414s] RU2EN source normalized: я делал лейдинги. -> я делал лендинги.
+[ 34.568s] RU2EN source normalized: я делал лейдинги, -> я делал лендинги,
+[ 34.568s] LOWLAT sentence queued: я делал лендинги,
+[ 34.746s] LOWLAT skipped source contained duplicate: Я работал в компании AMDase, ~= Когда я работал в компании AMDase,
+[ 34.746s] RU2EN source normalized: я делал лейдинги, -> я делал лендинги,
+[ 34.746s] RU2EN source normalized: очень много лейдингов. -> очень много лендингов.
+[ 34.882s] Translation time: 0.313 sec
+[ 34.882s] TRANSLATED: I've been doing a little landing,
+[ 34.909s] RU2EN source normalized: я делал лейдинги. -> я делал лендинги.
+[ 34.909s] RU2EN source normalized: Очень много лейдингов. -> Очень много лендингов.
+[ 34.909s] LOWLAT sentence queued: Очень много лендингов.
+[ 35.207s] Translation time: 0.298 sec
+[ 35.207s] TRANSLATED: There's a lot of landings.
+[ 35.366s] TTS time: 0.243 sec
+[ 35.366s] TTS audio ready: 1.46 sec
+[ 35.366s] PLAYBACK queued: I've been doing a little landing,
+[ 35.406s] RU2EN source normalized: В компании AMDs я делал лейдинги, -> В компании AMDs я делал лендинги,
+[ 35.541s] TTS time: 0.174 sec
+[ 35.541s] TTS audio ready: 1.18 sec
+[ 35.541s] PLAYBACK queued: There's a lot of landings.
+[ 35.739s] PARTIAL sanitized: removed hallucinated tail (А МДС я делал лейдинги. Очень много лейдингов. Так как у лейдингов обычно... -> А МДС я делал лейдинги. Очень много лейдингов. Так как у лейдингов обычно. ..)
+[ 35.740s] RU2EN source normalized: А МДС я делал лейдинги. -> А МДС я делал лендинги.
+[ 35.740s] LOWLAT allowed suspicious fragment: А МДС я делал лендинги.
+[ 36.058s] LOWLAT allowed suspicious fragment: Так как у лендингов обычно нет сложности.
+[ 36.222s] RU2EN source normalized: я делал лейдинги. -> я делал лендинги.
+[ 36.222s] RU2EN source normalized: Очень много лейдингов. -> Очень много лендингов.
+[ 36.222s] RU2EN source normalized: Так как у лейдингов обычно нет сложности. -> Так как у лендингов обычно нет сложности.
+[ 36.222s] LOWLAT allowed suspicious fragment: Так как у лендингов обычно нет сложности.
+[ 36.222s] LOWLAT sentence queued: Так как у лендингов обычно нет сложности.
+[ 36.440s] RU2EN source normalized: я делал лейдинги. -> я делал лендинги.
+[ 36.440s] RU2EN source normalized: Очень много лейдингов. -> Очень много лендингов.
+[ 36.440s] RU2EN source normalized: Так как у лейдингов обычно нет служения лейдинга. -> Так как у лендингов обычно нет служения лейдинга.
+[ 36.440s] LOWLAT allowed suspicious fragment: Так как у лендингов обычно нет служения лейдинга.
+[ 36.562s] Translation time: 0.340 sec
+[ 36.563s] TRANSLATED: Because the Landings don't usually have a problem.
+[ 37.035s] TTS time: 0.231 sec
+[ 37.035s] TTS audio ready: 2.22 sec
+[ 37.035s] PLAYBACK queued: Because the Landings don't usually have a problem.
+[ 37.080s] RU2EN source normalized: очень много лейдингов. -> очень много лендингов.
+[ 37.080s] RU2EN source normalized: Так как у лейдингов обычно нет сложной логики, -> Так как у лендингов обычно нет сложной логики,
+[ 37.080s] LOWLAT allowed suspicious fragment: Так как у лендингов обычно нет сложной логики,
+[ 37.375s] PARTIAL sanitized: removed hallucinated tail (Очень много лейдингов. Так как у лейдингов обычно нет сложной логики, то основной... -> Очень много лейдингов. Так как у лейдингов обычно нет сложной логики, то основной. ..)
+[ 37.375s] RU2EN source normalized: Очень много лейдингов. -> Очень много лендингов.
+[ 37.375s] RU2EN source normalized: Так как у лейдингов обычно нет сложной логики, -> Так как у лендингов обычно нет сложной логики,
+[ 37.375s] LOWLAT allowed suspicious fragment: Так как у лендингов обычно нет сложной логики,
+[ 37.375s] LOWLAT sentence queued: Так как у лендингов обычно нет сложной логики,
+[ 37.795s] Translation time: 0.420 sec
+[ 37.795s] TRANSLATED: Since the Landings don't usually have complex logic,
+[ 37.822s] PARTIAL sanitized: removed hallucinated tail (очень много лайндингов. Так как у лайндингов обычно нет сложной логики, то основное влияние... -> очень много лайндингов. Так как у лайндингов обычно нет сложной логики, то основное влияние. ..)
+[ 37.822s] LOWLAT sentence queued: очень много лайндингов.
+[ 38.029s] Translation time: 0.206 sec
+[ 38.029s] TRANSLATED skipped same-prefix retry: There's a lot of Lindings. ~= There's a lot of landings.
+[ 38.030s] PARTIAL sanitized: removed hallucinated tail (очень много лайндингов. Так как у лайндингов обычно нет сложной логики, то основное влияние на... -> очень много лайндингов. Так как у лайндингов обычно нет сложной логики, то основное влияние на. ..)
+[ 38.030s] LOWLAT allowed suspicious fragment: Так как у лайндингов обычно нет сложной логики,
+[ 38.204s] LOWLAT allowed suspicious fragment: Так как у лайндингов обычно нет сложной логики,
+[ 38.204s] LOWLAT sentence queued: Так как у лайндингов обычно нет сложной логики,
+[ 38.338s] TTS time: 0.302 sec
+[ 38.338s] TTS audio ready: 2.58 sec
+[ 38.338s] PLAYBACK queued: Since the Landings don't usually have complex logic,
+[ 38.410s] LOWLAT allowed suspicious fragment: Так как у лайндингов обычно нет сложной логики,
+[ 38.558s] Translation time: 0.354 sec
+[ 38.558s] TRANSLATED: Because the Lindings don't usually have complex logic,
+[ 38.728s] LOWLAT skipped source contained duplicate: лайндингов обычно нет сложной логики, ~= Так как у лайндингов обычно нет сложной логики,
+[ 39.000s] TTS time: 0.201 sec
+[ 39.000s] TTS audio ready: 2.86 sec
+[ 39.000s] PLAYBACK queued: Because the Lindings don't usually have complex logic,
+[ 39.041s] PARTIAL sanitized: removed hallucinated tail (Так как у лайнингов обычно нет сложной логики, то основное влияние на производительность вызывает... -> Так как у лайнингов обычно нет сложной логики, то основное влияние на производительность вызывает. ..)
+[ 39.188s] PARTIAL sanitized: removed hallucinated tail (Так как у лайндингов обычно нет сложной логики, то основное влияние на производительность вызывает... -> Так как у лайндингов обычно нет сложной логики, то основное влияние на производительность вызывает. ..)
+[ 39.188s] LOWLAT skipped source contained duplicate: лайндингов обычно нет сложной логики, ~= Так как у лайндингов обычно нет сложной логики,
+[ 39.188s] LOWLAT allowed suspicious fragment: то основное влияние на производительность вызывает.
+[ 39.504s] LOWLAT skipped source contained duplicate: лайндингов обычно нет сложной логики, ~= Так как у лайндингов обычно нет сложной логики,
+[ 39.504s] LOWLAT allowed suspicious fragment: то основное влияние на производительность вызывает критерия.
+[ 39.815s] LOWLAT allowed suspicious fragment: то основное влияние на производительность вызывают картинки.
+[ 39.964s] LOWLAT allowed suspicious fragment: то основное влияние на производительность вызывают картинки.
+[ 39.964s] LOWLAT sentence queued: то основное влияние на производительность вызывают картинки.
+[ 40.145s] LOWLAT allowed suspicious fragment: то основное влияние на производительность вызывают картинки.
+[ 40.277s] Translation time: 0.313 sec
+[ 40.277s] TRANSLATED: the main effect on productivity is caused by images.
+[ 40.443s] TTS time: 0.165 sec
+[ 40.443s] TTS audio ready: 3.22 sec
+[ 40.443s] PLAYBACK queued: the main effect on productivity is caused by images.
+[ 41.641s] LOWLAT skipped known weak draft: Сначала я пользовался бесплатным.
+[ 42.549s] LOWLAT sentence queued: Сначала я пользовался бесплатными сервисами.
+[ 42.726s] Translation time: 0.177 sec
+[ 42.727s] TRANSLATED: At first, I used free services.
+[ 42.979s] TTS time: 0.253 sec
+[ 42.979s] TTS audio ready: 1.87 sec
+[ 42.979s] PLAYBACK queued: At first, I used free services.
+[ 43.753s] LOWLAT allowed suspicious fragment: но упирался то в лимит,
+[ 44.068s] LOWLAT allowed suspicious fragment: но упирался то в лимит,
+[ 44.069s] LOWLAT sentence queued: но упирался то в лимит,
+[ 44.069s] RU2EN source rewrite before translation: но упирался то в лимит, -> но я сталкивался с лимитом,
+[ 44.262s] PARTIAL sanitized: removed hallucinated tail (называют картинки. Сначала я пользовался бесплатными сервисами, но опирался то в лимит, то в... -> называют картинки. Сначала я пользовался бесплатными сервисами, но опирался то в лимит, то в. ..)
+[ 44.263s] LOWLAT allowed suspicious fragment: но опирался то в лимит,
+[ 44.263s] Translation time: 0.195 sec
+[ 44.263s] TRANSLATED: But I ran into a limit,
+[ 44.710s] TTS time: 0.204 sec
+[ 44.710s] TTS audio ready: 1.23 sec
+[ 44.710s] PLAYBACK queued: But I ran into a limit,
+[ 44.763s] LOWLAT allowed suspicious fragment: то в отсутствие гиперпетизма.
+[ 44.917s] LOWLAT allowed suspicious fragment: то в отсутствие гибкости.
+[ 45.391s] LOWLAT allowed suspicious fragment: то в отсутствие гибкости.
+[ 45.391s] LOWLAT sentence queued: то в отсутствие гибкости.
+[ 45.584s] FINAL raw: Сначала я пользовался бесплатными сервисами, но упирался то в лимит, то в отсутствие гибкости.
+[ 45.585s] LOWLAT skipped source contained duplicate: Сначала я пользовался бесплатными сервисами, ~= Сначала я пользовался бесплатными сервисами.
+[ 45.585s] LOWLAT sentence stream: no new segments (final=True)
+[ 45.585s] FINAL cleanup dropped weak draft: Когда я работал в компании AMDase,
+[ 45.587s] FINAL cleanup dropped weak draft: Так как у лендингов обычно нет сложности.
+[ 45.588s] FINAL: Когда я работал в компании AMDase, я делал лендинги, Очень много лендингов. Так как у лендингов обычно нет сложной логики, очень много лайндингов. Так как у лайндингов обычно нет сложной логики, то основное влияние на производительность вызывают картинки. Сначала я пользовался бесплатными сервисами. но упирался то в лимит, то в отсутствие гибкости.
+[ 45.742s] Translation time: 0.351 sec
+[ 45.742s] TRANSLATED: There is no flexibility.
+[ 45.869s] TTS time: 0.127 sec
+[ 45.869s] TTS audio ready: 1.31 sec
+[ 45.869s] PLAYBACK queued: There is no flexibility.
+[ 46.168s] PARTIAL sanitized: removed hallucinated tail (Я решил создать... -> Я решил создать. ..)
+[ 46.431s] PARTIAL sanitized: removed hallucinated tail (И я решил создать... -> И я решил создать. ..)
+[ 46.431s] LOWLAT allowed suspicious fragment: И я решил создать.
+[ 46.549s] PARTIAL sanitized: removed hallucinated tail (и я решил создать свой... -> и я решил создать свой. ..)
+[ 46.550s] LOWLAT allowed suspicious fragment: и я решил создать свой.
+[ 46.792s] LOWLAT allowed suspicious fragment: и я решил создать свой язык.
+[ 46.909s] LOWLAT allowed suspicious fragment: И я решил создать свой инструмент.
+[ 47.565s] PARTIAL sanitized: removed hallucinated tail (И я решил создать свой инструмент, который... -> И я решил создать свой инструмент, который. ..)
+[ 47.565s] LOWLAT allowed suspicious fragment: И я решил создать свой инструмент,
+[ 47.565s] LOWLAT phrase_seen relaxed admit: И я решил создать свой инструмент,
+[ 47.565s] LOWLAT sentence queued: И я решил создать свой инструмент,
+[ 47.713s] PARTIAL sanitized: removed hallucinated tail (И я решил создать свой инструмент, которым... -> И я решил создать свой инструмент, которым. ..)
+[ 47.714s] LOWLAT allowed suspicious fragment: И я решил создать свой инструмент,
+[ 47.714s] LOWLAT allowed suspicious fragment: которым.
+[ 47.848s] PARTIAL sanitized: removed hallucinated tail (И я решил создать свой инструмент, который мог... -> И я решил создать свой инструмент, который мог. ..)
+[ 47.848s] LOWLAT allowed suspicious fragment: И я решил создать свой инструмент,
+[ 47.848s] LOWLAT allowed suspicious fragment: который мог.
+[ 47.978s] Translation time: 0.413 sec
+[ 47.978s] TRANSLATED: And I decided to create my instrument,
+[ 48.124s] PARTIAL sanitized: removed hallucinated tail (И я решил создать свой инструмент, которым активно... -> И я решил создать свой инструмент, которым активно. ..)
+[ 48.124s] LOWLAT allowed suspicious fragment: которым активно.
+[ 48.380s] TTS time: 0.161 sec
+[ 48.380s] TTS audio ready: 1.90 sec
+[ 48.380s] PLAYBACK queued: And I decided to create my instrument,
+[ 48.392s] LOWLAT allowed suspicious fragment: которым активно пользуется.
+[ 48.524s] LOWLAT allowed suspicious fragment: которым активно пользуюсь.
+[ 48.663s] LOWLAT allowed suspicious fragment: которым активно пользуюсь в достижении.
+[ 48.803s] LOWLAT allowed suspicious fragment: которым активно пользуюсь до сих пор.
+[ 49.784s] LOWLAT allowed suspicious fragment: которым активно пользуюсь до сих пор,
+[ 49.927s] LOWLAT allowed suspicious fragment: которым активно пользуюсь до сих пор,
+[ 49.927s] LOWLAT sentence queued: которым активно пользуюсь до сих пор,
+[ 49.927s] RU2EN source rewrite before translation: которым активно пользуюсь до сих пор, -> я активно пользуюсь этим до сих пор,
+[ 50.104s] LOWLAT allowed suspicious fragment: которым активно пользуюсь до сих пор,
+[ 50.104s] LOWLAT allowed suspicious fragment: который помог мне.
+[ 50.117s] Translation time: 0.189 sec
+[ 50.117s] TRANSLATED: I've been using it very actively so far,
+[ 50.257s] PARTIAL sanitized: removed hallucinated tail (И я решил создать свой инструмент, которым активно пользуюсь до сих пор, который помог мне не... -> И я решил создать свой инструмент, которым активно пользуюсь до сих пор, который помог мне не. ..)
+[ 50.257s] LOWLAT allowed suspicious fragment: который помог мне не.
+[ 50.414s] LOWLAT allowed suspicious fragment: который помог мне невероятно.
+[ 50.549s] TTS time: 0.192 sec
+[ 50.549s] TTS audio ready: 2.15 sec
+[ 50.549s] PLAYBACK queued: I've been using it very actively so far,
+[ 50.868s] LOWLAT allowed suspicious fragment: который помог мне невероятно быстро.
+[ 51.311s] LOWLAT allowed suspicious fragment: который помог мне невероятно быстро ускорить.
+[ 51.742s] LOWLAT allowed suspicious fragment: который помог мне невероятно быстро ускорить работу.
+[ 51.886s] LOWLAT allowed suspicious fragment: который помог мне невероятно быстро ускорить работу.
+[ 51.886s] LOWLAT sentence queued: который помог мне невероятно быстро ускорить работу.
+[ 52.359s] Translation time: 0.473 sec
+[ 52.359s] TRANSLATED: The one who helped me speed up my work in an incredibly fast way.
+[ 52.388s] FINAL raw: которым активно пользуюсь до сих пор, который помог мне невероятно быстро ускорить работу.
+[ 52.388s] LOWLAT sentence stream: no new segments (final=True)
+[ 52.388s] FINAL: И я решил создать свой инструмент, которым активно пользуюсь до сих пор, который помог мне невероятно быстро ускорить работу.
+[ 52.486s] TTS time: 0.127 sec
+[ 52.486s] TTS audio ready: 3.18 sec
+[ 52.486s] PLAYBACK queued: The one who helped me speed up my work in an incredibly fast way.

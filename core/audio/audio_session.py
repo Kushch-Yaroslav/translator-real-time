@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import threading
 from dataclasses import dataclass
+import time
 from typing import Optional, Callable, Any
 
 import numpy as np
@@ -19,6 +20,34 @@ class AudioSessionConfig:
     blocksize: int = 1024
     input_queue_maxsize: int = 128
     output_queue_maxsize: int = 128
+
+
+@dataclass(frozen=True)
+class PlaybackAudioBlock:
+    audio: np.ndarray
+    item_id: str
+    text: str
+    source_type: str
+    created_at: float
+    block_index: int
+    total_blocks: int
+    generation: int = 0
+
+    @property
+    def is_start(self) -> bool:
+        return self.block_index == 0
+
+    @property
+    def is_end(self) -> bool:
+        return self.block_index >= self.total_blocks - 1
+
+
+@dataclass(frozen=True)
+class ClearOutputQueueResult:
+    cleared_blocks: int = 0
+    skipped_items: int = 0
+    preserved_blocks: int = 0
+    preserved_items: int = 0
 
 
 class AudioSession:
@@ -41,6 +70,7 @@ class AudioSession:
         self.on_playback_started: Optional[Callable[[str], None]] = None
         self.on_playback_finished: Optional[Callable[[str], None]] = None
         self.on_playback_skipped: Optional[Callable[[str, str], None]] = None
+        self._playing_item_id: str = ""
 
     def start(self) -> None:
         with self._lock:
@@ -105,26 +135,88 @@ class AudioSession:
         with self._lock:
             self.stopping = False
 
-    def clear_output_queue(self, reason: str = "cleared") -> int:
+    def clear_output_queue(
+        self,
+        reason: str = "cleared",
+        *,
+        preserve_final: bool = False,
+        preserve_playing: bool = False,
+    ) -> ClearOutputQueueResult:
         cleared = 0
-        skipped_texts: set[str] = set()
+        preserved = 0
+        preserved_items: set[str] = set()
+        skipped_items: dict[str, tuple[str, bool]] = {}
+        retained_items: list[Any] = []
 
         while not self.output_queue.empty():
             try:
                 item = self.output_queue.get_nowait()
+                if isinstance(item, PlaybackAudioBlock):
+                    already_playing = item.item_id == self._playing_item_id
+                    should_preserve = (
+                        (preserve_playing and already_playing)
+                        or (preserve_final and item.source_type == "final")
+                    )
+                    if should_preserve:
+                        retained_items.append(item)
+                        preserved += 1
+                        preserved_items.add(item.item_id)
+                        continue
+
+                    cleared += 1
+                    if item.text:
+                        skipped_items.setdefault(
+                            item.item_id,
+                            (
+                                self._format_playback_log_text(
+                                    item,
+                                    already_playing,
+                                    status="skipped",
+                                ),
+                                already_playing,
+                            ),
+                        )
+                    continue
+
                 cleared += 1
                 if isinstance(item, tuple) and len(item) == 4:
                     _chunk, text, _is_start, _is_end = item
                     if text:
-                        skipped_texts.add(text)
+                        skipped_items.setdefault(text, (text, False))
             except queue.Empty:
                 break
 
-        if self.on_playback_skipped:
-            for text in skipped_texts:
-                self.on_playback_skipped(text, reason)
+        for item in retained_items:
+            try:
+                self.output_queue.put_nowait(item)
+            except queue.Full:
+                cleared += 1
+                if isinstance(item, PlaybackAudioBlock) and item.text:
+                    skipped_items.setdefault(
+                        item.item_id,
+                        (
+                            self._format_playback_log_text(
+                                item,
+                                item.item_id == self._playing_item_id,
+                                status="skipped",
+                            ),
+                            item.item_id == self._playing_item_id,
+                        ),
+                    )
 
-        return cleared
+        if self.on_playback_skipped:
+            for text, already_playing in skipped_items.values():
+                detailed_reason = reason
+                if already_playing:
+                    detailed_reason = f"{reason}:playing"
+                self.on_playback_skipped(text, detailed_reason)
+
+        return ClearOutputQueueResult(
+            cleared_blocks=cleared,
+            skipped_items=len(skipped_items),
+            preserved_blocks=preserved,
+            preserved_items=len(preserved_items),
+        )
 
     def get_output_queue_duration_seconds(self) -> float:
         queued_blocks = self.output_queue.qsize()
@@ -173,12 +265,20 @@ class AudioSession:
             text = ""
             is_start = False
             is_end = False
-            if isinstance(item, tuple) and len(item) == 4:
+            if isinstance(item, PlaybackAudioBlock):
+                chunk = item.audio
+                text = item.text
+                is_start = item.is_start
+                is_end = item.is_end
+            elif isinstance(item, tuple) and len(item) == 4:
                 chunk, text, is_start, is_end = item
             else:
                 chunk = item
 
             if is_start and text and self.on_playback_started:
+                if isinstance(item, PlaybackAudioBlock):
+                    self._playing_item_id = item.item_id
+                    text = self._format_playback_log_text(item, False, status="playing")
                 self.on_playback_started(text)
 
             if chunk.shape[0] != frames:
@@ -190,6 +290,26 @@ class AudioSession:
 
             outdata[:] = chunk.astype(np.float32, copy=False)
             if is_end and text and self.on_playback_finished:
+                if isinstance(item, PlaybackAudioBlock):
+                    text = self._format_playback_log_text(item, True, status="finished")
                 self.on_playback_finished(text)
+                if isinstance(item, PlaybackAudioBlock) and self._playing_item_id == item.item_id:
+                    self._playing_item_id = ""
         except Exception:
             outdata.fill(0)
+
+    def _format_playback_log_text(
+        self,
+        item: PlaybackAudioBlock,
+        already_playing: bool,
+        *,
+        status: str,
+    ) -> str:
+        age_sec = max(0.0, time.monotonic() - item.created_at)
+        return (
+            f"{item.text} "
+            f"id={item.item_id} sourceType={item.source_type} status={status} "
+            f"textLen={len(item.text)} queueSize={self.output_queue.qsize()} "
+            f"itemAge={age_sec:.3f}s alreadyPlaying={already_playing} "
+            f"generation={item.generation}"
+        )

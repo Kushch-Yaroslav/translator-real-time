@@ -145,6 +145,12 @@ class AppFileLogger:
             "TRANSLATED skipped:",
             "TTS time:",
             "TTS audio ready:",
+            "TTS item created:",
+            "TTS item queued:",
+            "PLAYBACK queued:",
+            "PLAYBACK started:",
+            "PLAYBACK finished:",
+            "PLAYBACK skipped:",
             "Dropped stale TTS audio queue",
             "Engine is not running yet.",
         )

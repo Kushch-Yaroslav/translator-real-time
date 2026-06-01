@@ -70,3 +70,23 @@ def test_dialogue_template_maps_known_name_farewell() -> None:
     service.config = TranslationConfig(direction=TranslationDirection.EN_TO_RU, enabled=True)
 
     assert service._translate_en_ru_dialogue_template("Bye Jeremy.") == "Пока, Джереми."
+
+
+def test_dialogue_template_translates_founder_ceo_intro() -> None:
+    service = TranslationService.__new__(TranslationService)
+    service.config = TranslationConfig(direction=TranslationDirection.EN_TO_RU, enabled=True)
+
+    assert (
+        service._translate_en_ru_dialogue_template("Hey, I'm Oli, founder and CEO of MicroOne.")
+        == "Привет, я Оли, основатель и CEO MicroOne."
+    )
+
+
+def test_postprocess_en_ru_mixed_intro_repairs_untranslated_founder_ceo_words() -> None:
+    service = TranslationService.__new__(TranslationService)
+    service.config = TranslationConfig(direction=TranslationDirection.EN_TO_RU, enabled=True)
+
+    assert (
+        service._postprocess_en_ru_mixed_intro("Привет, Im Oli Founder And Ceo Of Microone.")
+        == "Привет, я Оли, основатель и CEO MicroOne."
+    )

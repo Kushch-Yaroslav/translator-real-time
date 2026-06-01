@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import threading
 import time
 
@@ -132,6 +133,7 @@ class MainWindow(QWidget):
 
         self.pipeline_running = False
         self.pipeline_starting = False
+        self._ui_spoken_item_ids: set[str] = set()
 
         self.original_audio_mode = self.ORIGINAL_MODE_DUCKED
         self.original_duck_percent = 50
@@ -451,6 +453,7 @@ class MainWindow(QWidget):
         if self.pipeline_running or self.pipeline_starting:
             return
 
+        self._ui_spoken_item_ids.clear()
         self.refresh_routes()
         for branch in self.branch_controllers:
             self._emit_log(
@@ -498,6 +501,7 @@ class MainWindow(QWidget):
         self.pipeline_running = False
         self.listen_active = False
         self.speak_active = False
+        self._ui_spoken_item_ids.clear()
         self._set_listen_level(0.0)
         self._set_speak_level(0.0)
         self._update_controls_state()
@@ -977,15 +981,43 @@ class MainWindow(QWidget):
         listen_prefix = f"{self.listen_branch.definition.log_prefix} "
 
         if stripped_message.startswith(speak_prefix):
-            self.speak_log_output.append(stripped_message[len(speak_prefix):])
+            ui_message = self._format_user_facing_spoken_log(
+                stripped_message[len(speak_prefix):],
+                target_language="EN",
+            )
+            if ui_message:
+                self.speak_log_output.append(ui_message)
             return
 
         if stripped_message.startswith(listen_prefix):
-            self.listen_log_output.append(stripped_message[len(listen_prefix):])
+            ui_message = self._format_user_facing_spoken_log(
+                stripped_message[len(listen_prefix):],
+                target_language="RU",
+            )
+            if ui_message:
+                self.listen_log_output.append(ui_message)
             return
 
-        self.speak_log_output.append(stripped_message)
-        self.listen_log_output.append(stripped_message)
+    def _format_user_facing_spoken_log(self, message: str, *, target_language: str) -> str:
+        if not message.startswith("PLAYBACK started: "):
+            return ""
+
+        if " sourceType=final " not in message or " status=playing " not in message:
+            return ""
+
+        item_match = re.search(r"\bid=(tts-\d+)\b", message)
+        if item_match:
+            item_id = item_match.group(1)
+            if item_id in self._ui_spoken_item_ids:
+                return ""
+            self._ui_spoken_item_ids.add(item_id)
+
+        text = message[len("PLAYBACK started: "):].strip()
+        text = re.sub(r"\s+id=tts-\d+\b.*$", "", text).strip()
+        if not text:
+            return ""
+
+        return f"{target_language}: {text}"
 
     def _append_error_to_ui(self, message: str) -> None:
         stripped_message = message.strip()
