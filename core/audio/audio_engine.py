@@ -229,6 +229,9 @@ class AudioEngine:
         self._ru_to_en_pending_phrase_seen_count: int = 0
         self._ru_to_en_pending_phrase_first_seen_at: float = 0.0
         self._ru_to_en_pending_phrase_last_seen_at: float = 0.0
+        self._en_to_ru_last_final_received_at: float = 0.0
+        self._en_to_ru_translation_started_at_by_text: dict[str, float] = {}
+        self._en_to_ru_tts_queued_at_by_text: dict[str, float] = {}
         self._translation_paused = False
         self._last_input_level = 0.0
 
@@ -357,7 +360,7 @@ class AudioEngine:
 
         self.session = AudioSession(config)
         self.session.on_error = self._handle_error
-        self.session.on_playback_started = lambda text: self._log(f"PLAYBACK started: {text}")
+        self.session.on_playback_started = self._on_playback_started
         self.session.on_playback_finished = lambda text: self._log(f"PLAYBACK finished: {text}")
         self.session.on_playback_skipped = (
             lambda text, reason: self._log(f"PLAYBACK skipped: {text} reason={reason}")
@@ -414,6 +417,16 @@ class AudioEngine:
             f"samplerate={samplerate}, channels={channels}, blocksize={blocksize}, "
             f"pipeline=realtime {branch_config.label}"
         )
+        if branch_config.translation_direction == "en_to_ru":
+            self._log(
+                "EN2RU STT config active | "
+                f"backend={self.app_config.stt.backend} "
+                f"min_window_sec={self.app_config.stt.silero_min_window_sec:.2f} "
+                f"min_silence_ms={self.app_config.stt.silero_min_silence_ms} "
+                f"speech_pad_ms={self.app_config.stt.silero_speech_pad_ms} "
+                f"final_debounce_sec={self.app_config.stt.final_debounce_sec:.2f} "
+                f"partial_emit_enabled={self.app_config.stt.partial_emit_enabled}"
+            )
 
     def stop(self) -> None:
         if not self.running and self.session is None:
@@ -809,6 +822,13 @@ class AudioEngine:
         if not self.running or self._translation_paused:
             return
 
+        if self._process_en_to_ru_final_segments_if_needed(text, source_type=source_type):
+            return
+
+        branch_config = self._get_active_branch_config()
+        if branch_config.translation_direction == "en_to_ru" and source_type == "final":
+            self._mark_en_to_ru_final_received(text)
+
         if self._stt_backend_outputs_translated_text():
             translated_text = self._normalize_text(text)
             translation_elapsed = 0.0
@@ -818,6 +838,8 @@ class AudioEngine:
                 self._log("Translation skipped: service is unavailable")
                 return
 
+            if branch_config.translation_direction == "en_to_ru" and source_type == "final":
+                self._mark_en_to_ru_translation_started(text)
             translation_started_at = time.perf_counter()
             try:
                 translated_text = self._translate_ru_to_en_with_optional_context(
@@ -864,6 +886,116 @@ class AudioEngine:
         self._remember_translated_source_text_for_compare(text)
         self._log(f"TRANSLATED: {translated_text}")
         self._enqueue_tts_text(translated_text, source_type=source_type)
+        if branch_config.translation_direction == "en_to_ru" and source_type == "final":
+            self._mark_en_to_ru_tts_queued(translated_text)
+
+    def _process_en_to_ru_final_segments_if_needed(self, text: str, *, source_type: str) -> bool:
+        branch_config = self._get_active_branch_config()
+        if branch_config.translation_direction != "en_to_ru" or source_type != "final":
+            return False
+        if self._stt_backend_outputs_translated_text():
+            return False
+
+        final_text = self._normalize_text(text)
+        if not final_text:
+            return False
+
+        segments = self._split_en_to_ru_final_segments(final_text)
+        if len(segments) <= 1:
+            return False
+
+        translation_service = self.translation_service
+        if translation_service is None:
+            self._log("Translation skipped: service is unavailable")
+            return True
+
+        self._mark_en_to_ru_final_received(final_text)
+        self._log(f"EN2RU FINAL received: {final_text}")
+        self._log(f"EN2RU FINAL segmented: count={len(segments)}")
+
+        for index, segment in enumerate(segments, start=1):
+            if not self.running or self._translation_paused:
+                break
+
+            translation_started_at = time.perf_counter()
+            self._mark_en_to_ru_translation_started(segment)
+            try:
+                translated_text = self._normalize_text(translation_service.translate(segment))
+            except Exception as error:
+                self._handle_error(f"Translation error: {error}")
+                continue
+
+            translation_elapsed = time.perf_counter() - translation_started_at
+            self._log(
+                "EN2RU segment translated "
+                f"{index}/{len(segments)} time={translation_elapsed:.3f}s "
+                f"source={segment} translation={translated_text or '<empty>'}"
+            )
+
+            if not translated_text:
+                continue
+
+            if self._should_skip_translated_text(translated_text):
+                self._log(f"TRANSLATED skipped: duplicate segment={index}")
+                continue
+
+            if self._should_skip_strict_short_translated_fragment(segment, translated_text):
+                self._log(
+                    "TRANSLATED skipped short low-confidence fragment: "
+                    f"{translated_text}"
+                )
+                continue
+
+            self.last_translated_text = translated_text
+            self.last_translated_at = time.monotonic()
+            self._remember_translated_text_for_compare(translated_text)
+            self._remember_translated_source_text_for_compare(segment)
+            self._log(f"TRANSLATED: {translated_text}")
+            self._enqueue_tts_text(translated_text, source_type="final")
+            self._mark_en_to_ru_tts_queued(translated_text)
+            self._log(
+                f"EN2RU segment TTS queued {index}/{len(segments)} "
+                f"text={translated_text}"
+            )
+
+        return True
+
+    def _mark_en_to_ru_final_received(self, text: str) -> None:
+        now = time.monotonic()
+        self._en_to_ru_last_final_received_at = now
+        self._log(
+            "EN2RU FINAL received at "
+            f"{now:.3f} text={self._normalize_text(text)}"
+        )
+
+    def _mark_en_to_ru_translation_started(self, text: str) -> None:
+        now = time.monotonic()
+        source_norm = self._normalize_compare_text(text)
+        if source_norm:
+            self._en_to_ru_translation_started_at_by_text[source_norm] = now
+            if len(self._en_to_ru_translation_started_at_by_text) > 32:
+                self._en_to_ru_translation_started_at_by_text.clear()
+
+        final_delay = (
+            now - self._en_to_ru_last_final_received_at
+            if self._en_to_ru_last_final_received_at > 0.0
+            else 0.0
+        )
+        self._log(
+            "EN2RU translation started at "
+            f"{now:.3f} final_to_translation_sec={final_delay:.3f} "
+            f"source={self._normalize_text(text)}"
+        )
+
+    def _mark_en_to_ru_tts_queued(self, text: str) -> None:
+        now = time.monotonic()
+        translated_norm = self._normalize_compare_text(text)
+        if not translated_norm:
+            return
+
+        self._en_to_ru_tts_queued_at_by_text[translated_norm] = now
+        if len(self._en_to_ru_tts_queued_at_by_text) > 32:
+            self._en_to_ru_tts_queued_at_by_text.clear()
 
     def _translate_ru_to_en_with_optional_context(
         self,
@@ -1201,6 +1333,27 @@ class AudioEngine:
                     f"id={item_id} sourceType={request.source_type} "
                     f"textLen={len(chunk_text)} queueSize={queue_size}"
                 )
+
+    def _on_playback_started(self, text: str) -> None:
+        self._log(f"PLAYBACK started: {text}")
+        branch_config = self._get_active_branch_config()
+        if branch_config.translation_direction != "en_to_ru":
+            return
+
+        normalized_text = self._normalize_compare_text(text)
+        queued_at = self._en_to_ru_tts_queued_at_by_text.pop(normalized_text, 0.0)
+        now = time.monotonic()
+        if queued_at > 0.0:
+            self._log(
+                "EN2RU playback started at "
+                f"{now:.3f} queued_to_playback_sec={now - queued_at:.3f} "
+                f"text={self._normalize_text(text)}"
+            )
+        else:
+            self._log(
+                "EN2RU playback started at "
+                f"{now:.3f} text={self._normalize_text(text)}"
+            )
 
     def _coerce_tts_request(self, request: TTSRequest | tuple) -> TTSRequest:
         if isinstance(request, TTSRequest):
@@ -1801,7 +1954,7 @@ class AudioEngine:
     def _should_emit_partial_text(self, partial_text: str, incremental_text: str) -> bool:
         branch_config = self._get_active_branch_config()
         if branch_config.translation_direction != "ru_to_en":
-            return True
+            return False
 
         if self._partial_promoted_since_last_final and not self._uses_sentence_partial_streaming():
             return False
@@ -2035,18 +2188,16 @@ class AudioEngine:
             return service, label, False
 
     def _uses_low_latency_direct_pipeline(self) -> bool:
+        branch_config = self._get_active_branch_config()
+        if branch_config.translation_direction != "ru_to_en":
+            return False
+
         backend = (self.app_config.stt.backend or "nim").strip().lower()
         if backend == "faster_whisper":
             if not self.app_config.stt.partial_emit_enabled:
                 return False
             return True
         if backend == "whisper_cpp":
-            branch_config = self._get_active_branch_config()
-            if (
-                branch_config.translation_direction == "en_to_ru"
-                and not self.app_config.stt.partial_emit_enabled
-            ):
-                return False
             return True
         return False
 
@@ -2715,6 +2866,153 @@ class AudioEngine:
             trailing_fragment = text
 
         return completed_sentences, trailing_fragment
+
+    def _split_en_to_ru_final_segments(self, text: str) -> list[str]:
+        text = self._normalize_text(text)
+        if not text:
+            return []
+
+        max_chars = 160
+        max_words = 22
+        soft_max_chars = 120
+        comma_min_words = 8
+
+        primary_segments = self._split_en_to_ru_primary_segments(text)
+        if (
+            len(primary_segments) <= 1
+            and len(text) <= max_chars
+            and len(text.split()) <= max_words
+        ):
+            return [text]
+
+        segments: list[str] = []
+        for primary_segment in primary_segments:
+            primary_segment = self._normalize_text(primary_segment)
+            if not primary_segment:
+                continue
+
+            if (
+                len(primary_segment) <= max_chars
+                and len(primary_segment.split()) <= max_words
+            ):
+                segments.append(primary_segment)
+                continue
+
+            segments.extend(
+                self._split_en_to_ru_long_final_segment(
+                    primary_segment,
+                    max_chars=max_chars,
+                    max_words=max_words,
+                    soft_max_chars=soft_max_chars,
+                    comma_min_words=comma_min_words,
+                )
+            )
+
+        return [segment for segment in segments if segment]
+
+    @staticmethod
+    def _split_en_to_ru_primary_segments(text: str) -> list[str]:
+        text = AudioEngine._normalize_text(text)
+        if not text:
+            return []
+
+        matches = list(re.finditer(r"[^.!?;]+[.!?;]", text))
+        segments = [
+            match.group(0).strip()
+            for match in matches
+            if match.group(0).strip()
+        ]
+
+        tail_start = matches[-1].end() if matches else 0
+        trailing_fragment = text[tail_start:].strip()
+        if trailing_fragment:
+            segments.append(trailing_fragment)
+
+        return segments or [text]
+
+    def _split_en_to_ru_long_final_segment(
+        self,
+        text: str,
+        *,
+        max_chars: int,
+        max_words: int,
+        soft_max_chars: int,
+        comma_min_words: int,
+    ) -> list[str]:
+        text = self._normalize_text(text)
+        if not text:
+            return []
+
+        comma_parts = [
+            part.strip()
+            for part in re.split(r"(?<=,)\s+", text)
+            if part.strip()
+        ]
+        if len(comma_parts) > 1:
+            comma_segments: list[str] = []
+            current = ""
+            for part in comma_parts:
+                candidate = f"{current} {part}".strip() if current else part
+                candidate_words = len(candidate.split())
+                if (
+                    current
+                    and candidate_words >= comma_min_words
+                    and (len(candidate) > soft_max_chars or candidate_words > max_words)
+                ):
+                    comma_segments.append(current)
+                    current = part
+                else:
+                    current = candidate
+            if current:
+                comma_segments.append(current)
+
+            if len(comma_segments) > 1:
+                result: list[str] = []
+                for segment in comma_segments:
+                    result.extend(
+                        self._split_en_to_ru_word_chunks(
+                            segment,
+                            max_chars=max_chars,
+                            max_words=max_words,
+                        )
+                    )
+                return result
+
+        return self._split_en_to_ru_word_chunks(
+            text,
+            max_chars=max_chars,
+            max_words=max_words,
+        )
+
+    def _split_en_to_ru_word_chunks(
+        self,
+        text: str,
+        *,
+        max_chars: int,
+        max_words: int,
+    ) -> list[str]:
+        words = self._normalize_text(text).split()
+        if not words:
+            return []
+
+        chunks: list[str] = []
+        current_words: list[str] = []
+        for word in words:
+            candidate_words = current_words + [word]
+            candidate = " ".join(candidate_words)
+            if current_words and (
+                len(candidate_words) > max_words
+                or len(candidate) > max_chars
+            ):
+                chunks.append(" ".join(current_words))
+                current_words = [word]
+            else:
+                current_words = candidate_words
+
+        if current_words:
+            chunks.append(" ".join(current_words))
+
+        return chunks
 
     @staticmethod
     def _split_ru_to_en_phrases(text: str) -> tuple[list[str], str]:
