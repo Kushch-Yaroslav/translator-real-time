@@ -28,6 +28,11 @@ LISTEN_BRANCH_PROFILE = BranchRuntimeProfile(
     source_branch_id="listen",
     runtime_branch_id="primary",
     force_enabled=True,
+    stt_final_debounce_sec=0.30,
+    stt_partial_emit_enabled=False,
+    silero_min_window_sec=0.80,
+    silero_min_silence_ms=200,
+    silero_speech_pad_ms=90,
 )
 
 

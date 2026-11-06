@@ -137,6 +137,7 @@ class MainWindow(QWidget):
 
         self.original_audio_mode = self.ORIGINAL_MODE_DUCKED
         self.original_duck_percent = 50
+        self.tts_volume_percent = 100
 
         self.original_sink_name = ""
         self.listen_input_name = ""
@@ -365,6 +366,20 @@ class MainWindow(QWidget):
         slider_row.addWidget(self.original_volume_value_label)
         layout.addLayout(slider_row)
 
+        tts_slider_row = QHBoxLayout()
+        self.tts_volume_caption_label = QLabel("Громкость озвучки перевода:")
+        self.tts_volume_value_label = QLabel("100%")
+        self.tts_volume_slider = QSlider(Qt.Horizontal)
+        self.tts_volume_slider.setRange(0, 100)
+        self.tts_volume_slider.setSingleStep(5)
+        self.tts_volume_slider.setPageStep(10)
+        self.tts_volume_slider.setValue(self.tts_volume_percent)
+        self.tts_volume_slider.setEnabled(False)
+        tts_slider_row.addWidget(self.tts_volume_caption_label)
+        tts_slider_row.addWidget(self.tts_volume_slider, stretch=1)
+        tts_slider_row.addWidget(self.tts_volume_value_label)
+        layout.addLayout(tts_slider_row)
+
         return group
 
     def _build_logs_group(self) -> QGroupBox:
@@ -414,6 +429,7 @@ class MainWindow(QWidget):
         self.listen_duck_button.clicked.connect(self.set_original_audio_ducked)
         self.listen_full_button.clicked.connect(self.set_original_audio_full)
         self.original_volume_slider.valueChanged.connect(self._on_duck_volume_changed)
+        self.tts_volume_slider.valueChanged.connect(self._on_tts_volume_changed)
 
         if self.backend_manager:
             self.en_backend_group["restart_button"].clicked.connect(self.backend_manager.restart_en_to_ru_async)
@@ -569,6 +585,7 @@ class MainWindow(QWidget):
 
         self.listen_engine.set_translation_paused(False)
         self.speak_engine.set_translation_paused(False)
+        self._apply_tts_volume()
 
         self._stop_speak_passthrough_loopback()
         self._apply_current_original_audio_mode(fade_in=True)
@@ -643,6 +660,15 @@ class MainWindow(QWidget):
         self.original_audio_mode = self._classify_original_audio_mode(self.original_duck_percent)
         self._apply_current_original_audio_mode()
         self._update_controls_state()
+
+    def _on_tts_volume_changed(self, value: int) -> None:
+        self.tts_volume_percent = int(value)
+        self.tts_volume_value_label.setText(f"{self.tts_volume_percent}%")
+        self._apply_tts_volume()
+
+    def _apply_tts_volume(self) -> None:
+        for engine in (self.listen_engine, self.speak_engine):
+            engine.set_tts_volume_percent(self.tts_volume_percent)
 
     def _apply_current_original_audio_mode(self, *, fade_in: bool = False) -> None:
         if not self.pipeline_running or not self.original_loopback_module_id:
@@ -810,6 +836,7 @@ class MainWindow(QWidget):
             if lane_key == LISTEN_LANE_DEFINITION.lane_key
             else self.speak_level_signal.emit,
         )
+        replacement.engine.set_tts_volume_percent(self.tts_volume_percent)
 
         if not was_running:
             if not was_active:
@@ -895,6 +922,7 @@ class MainWindow(QWidget):
         for button in (self.listen_mute_button, self.listen_duck_button, self.listen_full_button):
             button.setEnabled(self.pipeline_running and not self.pipeline_starting)
         self.original_volume_slider.setEnabled(self.pipeline_running and not self.pipeline_starting)
+        self.tts_volume_slider.setEnabled(self.pipeline_running and not self.pipeline_starting)
 
         self.reset_audio_button.setStyleSheet(
             "QPushButton { "
@@ -944,6 +972,7 @@ class MainWindow(QWidget):
             active_color="#1b5f9e",
         )
         self.original_volume_value_label.setText(f"{self.original_duck_percent}%")
+        self.tts_volume_value_label.setText(f"{self.tts_volume_percent}%")
 
     @staticmethod
     def _set_status_chip(label: QLabel, text: str, color: str) -> None:
