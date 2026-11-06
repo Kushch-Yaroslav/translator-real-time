@@ -59,3 +59,28 @@ def test_stale_cleanup_preserves_remaining_blocks_for_playing_item() -> None:
     assert cleared.cleared_blocks == 1
     assert cleared.preserved_blocks == 1
     assert session.output_queue.get_nowait().item_id == "playing-final"
+
+
+def test_playback_volume_scales_only_tts_blocks() -> None:
+    session = AudioSession(AudioSessionConfig(input_device_index=0, output_device_index=0))
+    session.running = True
+    session.set_playback_volume_percent(25)
+
+    session.output_queue.put_nowait(
+        PlaybackAudioBlock(
+            audio=np.ones((1024, 1), dtype=np.float32),
+            item_id="tts-1",
+            text="translation",
+            source_type="final",
+            created_at=time.monotonic(),
+            block_index=0,
+            total_blocks=1,
+        )
+    )
+    outdata = np.zeros((1024, 1), dtype=np.float32)
+    session._output_callback(outdata, 1024, None, None)
+    assert np.allclose(outdata, 0.25)
+
+    session.output_queue.put_nowait(np.ones((1024, 1), dtype=np.float32))
+    session._output_callback(outdata, 1024, None, None)
+    assert np.allclose(outdata, 1.0)

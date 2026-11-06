@@ -234,6 +234,7 @@ class AudioEngine:
         self._en_to_ru_tts_queued_at_by_text: dict[str, float] = {}
         self._translation_paused = False
         self._last_input_level = 0.0
+        self._tts_volume_percent = 100
 
     def start(
             self,
@@ -359,6 +360,7 @@ class AudioEngine:
         source_output_ids_before = snapshot_source_output_ids()
 
         self.session = AudioSession(config)
+        self.session.set_playback_volume_percent(self._tts_volume_percent)
         self.session.on_error = self._handle_error
         self.session.on_playback_started = self._on_playback_started
         self.session.on_playback_finished = lambda text: self._log(f"PLAYBACK finished: {text}")
@@ -555,6 +557,13 @@ class AudioEngine:
 
         state = "paused" if self._translation_paused else "resumed"
         self._log(f"Translation stream {state}")
+
+    def set_tts_volume_percent(self, percent: int) -> None:
+        self._tts_volume_percent = max(0, min(100, int(percent)))
+        session = self.session
+        if session is not None:
+            session.set_playback_volume_percent(self._tts_volume_percent)
+        self._log(f"TTS playback volume: {self._tts_volume_percent}%")
 
     def get_mode(self) -> str:
         if self.processor is None:

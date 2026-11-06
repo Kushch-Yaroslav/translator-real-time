@@ -71,6 +71,11 @@ class AudioSession:
         self.on_playback_finished: Optional[Callable[[str], None]] = None
         self.on_playback_skipped: Optional[Callable[[str, str], None]] = None
         self._playing_item_id: str = ""
+        self._playback_volume = 1.0
+
+    def set_playback_volume_percent(self, percent: int) -> None:
+        bounded_percent = max(0, min(100, int(percent)))
+        self._playback_volume = bounded_percent / 100.0
 
     def start(self) -> None:
         with self._lock:
@@ -287,6 +292,9 @@ class AudioSession:
                 else:
                     padding = np.zeros((frames - chunk.shape[0], self.config.channels), dtype=np.float32)
                     chunk = np.vstack([chunk, padding])
+
+            if isinstance(item, PlaybackAudioBlock):
+                chunk = chunk * self._playback_volume
 
             outdata[:] = chunk.astype(np.float32, copy=False)
             if is_end and text and self.on_playback_finished:
