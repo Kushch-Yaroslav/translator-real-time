@@ -1,5 +1,34 @@
 # PROJECT STATUS
 
+## Latest: EN=>RU скорость/качество/циклы (2026-11-06, ветка perf/en-ru-quality-latency)
+
+Полный отчёт: [REPORT_EN_RU_PERF_2026-11-06.md](REPORT_EN_RU_PERF_2026-11-06.md).
+
+Корневая причина циклов «University of California...» — деградация STT
+(whisper.cpp `medium.en`) на быстрой живой речи + принудительный `temperature_inc=0.0`,
+который отключал штатный anti-loop фолбэк whisper.cpp. Переводчик/TTS были не виноваты.
+
+Принятые изменения:
+
+1. STT-модель `medium.en` → `large-v3-turbo` (старая удалена); сервер по-прежнему CUDA.
+2. `temperature_inc=0.2` включён (service/factory/app_config) — anti-loop фолбэк работает.
+3. `core/text/repetition.py` — n-грамм детектор циклов (fuzzy, RU-падежи), вшит в
+   STT-final и post-translation в `audio_engine.py`; 10 unit-тестов pass.
+4. Латентность: `stt_final_debounce_sec` 0.30→0.15 (LISTEN), `silero_max_window_sec` 8→4.5.
+5. Модель перевода: NLLB-200-3.3B отклонён (циклы «в в в...», ~75× медленнее на CPU),
+   opus-mt-en-ru сохранён; NLLB-артефакты удалены из кэшей.
+6. E2E-бенчмарк EN=>RU: `tests/run_en_to_ru_e2e.py` + 31 аудио + RU-референсы;
+   before/after: EN WER 0.000→0.005, max STT 22.3с→7.1с, MT 0.28с, RU WER ~0.43 (равно,
+   MT не менялся).
+
+Не принято / отложено:
+
+- boundary-layer streaming (мёртвый код под riva, высокий риск) — будущая опция;
+- клонирование голоса — отложено (образец запишется позже).
+
+Дефолты запуска пользователя — GPU: whisper.cpp (CUDA-сборка), opus-mt (cuda),
+Piper (use_cuda). Тестирование этой сессии шло на CPU (`CUDA_VISIBLE_DEVICES=''`).
+
 ## Iteration Rule
 
 Каждая новая итерация строго ограничена:

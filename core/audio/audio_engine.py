@@ -28,6 +28,7 @@ from core.sst.confirm_stt_factory import create_confirm_stt_service
 from core.sst.confirm_stt_service import ConfirmSTTService
 from core.sst.realtime_stt_factory import create_realtime_stt_service
 from core.sst.realtime_stt_protocol import RealtimeSTTService
+from core.text.repetition import collapse_repeated_spans
 from core.sst.sentence_boundary_segmenter import (
     SentenceBoundarySegmenter,
     SentenceBoundarySegmenterConfig,
@@ -702,6 +703,10 @@ class AudioEngine:
 
         text = self._normalize_text(text)
         text = self._collapse_immediate_repetitions(text)
+        span_text, span_collapsed = collapse_repeated_spans(text)
+        if span_collapsed:
+            self._log(f"FINAL span-collapse: removed repeated span -> {span_text}")
+            text = span_text
         if not text:
             self._log("FINAL: <empty>")
             return
@@ -863,6 +868,10 @@ class AudioEngine:
             translation_elapsed = time.perf_counter() - translation_started_at
 
         self._log(f"Translation time: {translation_elapsed:.3f} sec")
+
+        translated_text, translated_span_collapsed = collapse_repeated_spans(translated_text)
+        if translated_span_collapsed:
+            self._log(f"TRANSLATED span-collapse: {translated_text}")
 
         if not translated_text:
             self._log("TRANSLATED: <empty>")

@@ -26,6 +26,11 @@ class WhisperCppRealtimeSTTConfig:
     speech_threshold: float = 0.55
     timeout: float = 10.0
     prompt: str = ""
+    # Temperature fallback (whisper.cpp): decode at [t, t+inc, ...] in parallel
+    # and keep the best-ranked sequence. inc=0 disables the fallback and is
+    # what allowed repetition loops ("University of California" x9) to survive.
+    temperature: float = 0.0
+    temperature_inc: float = 0.2
     on_log: Optional[Callable[[str], None]] = None
 
 
@@ -244,8 +249,8 @@ class WhisperCppRealtimeSTTService:
             "file": ("audio.wav", wav_bytes, "audio/wav"),
             "language": (None, self.config.language),
             "response_format": (None, "json"),
-            "temperature": (None, "0.0"),
-            "temperature_inc": (None, "0.0"),
+            "temperature": (None, f"{self.config.temperature:.1f}"),
+            "temperature_inc": (None, f"{self.config.temperature_inc:.1f}"),
             "no_timestamps": (None, "true"),
             "suppress_nst": (None, "true"),
         }

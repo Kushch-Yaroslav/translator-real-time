@@ -1,0 +1,1 @@
+So we talked about the project last time and you said the design is almost ready. That is great news. I need you to check the budget with the finance team before Monday, because the client wants a final proposal by the end of the week. Also, can you invite the engineering lead to the meeting? She has a lot of questions about the API.

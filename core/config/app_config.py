@@ -27,6 +27,8 @@ class STTConfig:
     base_url: str = "http://localhost:9000"
     ws_url: str = "ws://localhost:9000/v1/realtime?intent=transcription"
     whispercpp_base_url: str = "http://127.0.0.1:8178"
+    whispercpp_temperature: float = 0.0
+    whispercpp_temperature_inc: float = 0.2
     riva_uri: str = "localhost:50051"
     riva_use_ssl: bool = False
     riva_ssl_cert_path: str = ""

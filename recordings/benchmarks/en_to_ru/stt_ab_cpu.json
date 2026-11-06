@@ -1,0 +1,454 @@
+[
+  {
+    "model": "ggml-medium.en.bin",
+    "mean_wer": 0.0,
+    "max_wer": 0.0,
+    "mean_latency_sec": 3.955,
+    "max_latency_sec": 6.76,
+    "results": [
+      {
+        "test": "continuous_fast/continuous_fast",
+        "expected": "So we talked about the project last time and you said the design is almost ready. That is great news. I need you to check the budget with the finance team before Monday, because the client wants a final proposal by the end of the week. Also, can you invite the engineering lead to the meeting? She has a lot of questions about the API.",
+        "text": "So we talked about the project last time and you said the design is almost ready. That is great news! I need you to check the budget with the finance team before Monday because the client wants a final proposal by the end of the week. Also, can you invite the engineering lead to the meeting? She has a lot of questions about the API.",
+        "wer": 0.0,
+        "latency_sec": 6.76
+      },
+      {
+        "test": "fast/airport",
+        "expected": "Yesterday I was at the airport and I missed my flight because of the traffic.",
+        "text": "Yesterday I was at the airport and I missed my flight because of the traffic.",
+        "wer": 0.0,
+        "latency_sec": 3.945
+      },
+      {
+        "test": "fast/conference",
+        "expected": "We are planning a small conference in October, and I need your help with the program.",
+        "text": "We are planning a small conference in October and I need your help with the program.",
+        "wer": 0.0,
+        "latency_sec": 3.981
+      },
+      {
+        "test": "fast/deadline",
+        "expected": "Can you send me the report before Friday?",
+        "text": "Can you send me the report before Friday?",
+        "wer": 0.0,
+        "latency_sec": 3.662
+      },
+      {
+        "test": "fast/greeting",
+        "expected": "Hi, how are you doing today?",
+        "text": "Hi, how are you doing today?",
+        "wer": 0.0,
+        "latency_sec": 3.62
+      },
+      {
+        "test": "fast/meeting",
+        "expected": "I think we should meet next week to discuss the budget.",
+        "text": "I think we should meet next week to discuss the budget.",
+        "wer": 0.0,
+        "latency_sec": 3.774
+      },
+      {
+        "test": "fast/payment",
+        "expected": "Could you please explain how the payment process works in your country?",
+        "text": "Could you please explain how the payment process works in your country?",
+        "wer": 0.0,
+        "latency_sec": 3.845
+      },
+      {
+        "test": "fast/project",
+        "expected": "I'm working on a new project for our client this week.",
+        "text": "I'm working on a new project for our client this week.",
+        "wer": 0.0,
+        "latency_sec": 3.839
+      },
+      {
+        "test": "fast/software",
+        "expected": "I have a question about the new software update and the release date.",
+        "text": "I have a question about the new software update and the release date.",
+        "wer": 0.0,
+        "latency_sec": 3.88
+      },
+      {
+        "test": "fast/university",
+        "expected": "The University of California was founded in 1868 and it is very famous.",
+        "text": "The University of California was founded in 1868 and it is very famous.",
+        "wer": 0.0,
+        "latency_sec": 3.906
+      },
+      {
+        "test": "fast/weather",
+        "expected": "The weather is really nice, so let's go for a walk in the park.",
+        "text": "The weather is really nice, so let's go for a walk in the park.",
+        "wer": 0.0,
+        "latency_sec": 4.005
+      },
+      {
+        "test": "noisy_crosstalk/airport",
+        "expected": "Yesterday I was at the airport and I missed my flight because of the traffic.",
+        "text": "Yesterday, I was at the airport and I missed my flight because of the traffic.",
+        "wer": 0.0,
+        "latency_sec": 4.0
+      },
+      {
+        "test": "noisy_crosstalk/conference",
+        "expected": "We are planning a small conference in October, and I need your help with the program.",
+        "text": "We are planning a small conference in October, and I need your help with the program.",
+        "wer": 0.0,
+        "latency_sec": 4.044
+      },
+      {
+        "test": "noisy_crosstalk/deadline",
+        "expected": "Can you send me the report before Friday?",
+        "text": "Can you send me the report before Friday?",
+        "wer": 0.0,
+        "latency_sec": 3.685
+      },
+      {
+        "test": "noisy_crosstalk/greeting",
+        "expected": "Hi, how are you doing today?",
+        "text": "Hi, how are you doing today?",
+        "wer": 0.0,
+        "latency_sec": 3.627
+      },
+      {
+        "test": "noisy_crosstalk/meeting",
+        "expected": "I think we should meet next week to discuss the budget.",
+        "text": "I think we should meet next week to discuss the budget.",
+        "wer": 0.0,
+        "latency_sec": 3.81
+      },
+      {
+        "test": "noisy_crosstalk/payment",
+        "expected": "Could you please explain how the payment process works in your country?",
+        "text": "Could you please explain how the payment process works in your country?",
+        "wer": 0.0,
+        "latency_sec": 3.853
+      },
+      {
+        "test": "noisy_crosstalk/project",
+        "expected": "I'm working on a new project for our client this week.",
+        "text": "I'm working on a new project for our client this week.",
+        "wer": 0.0,
+        "latency_sec": 3.84
+      },
+      {
+        "test": "noisy_crosstalk/software",
+        "expected": "I have a question about the new software update and the release date.",
+        "text": "I have a question about the new software update and the release date.",
+        "wer": 0.0,
+        "latency_sec": 3.882
+      },
+      {
+        "test": "noisy_crosstalk/university",
+        "expected": "The University of California was founded in 1868 and it is very famous.",
+        "text": "The University of California was founded in 1868 and it is very famous.",
+        "wer": 0.0,
+        "latency_sec": 3.942
+      },
+      {
+        "test": "noisy_crosstalk/weather",
+        "expected": "The weather is really nice, so let's go for a walk in the park.",
+        "text": "The weather is really nice, so let's go for a walk in the park.",
+        "wer": 0.0,
+        "latency_sec": 4.024
+      },
+      {
+        "test": "normal/airport",
+        "expected": "Yesterday I was at the airport and I missed my flight because of the traffic.",
+        "text": "Yesterday, I was at the airport and I missed my flight because of the traffic.",
+        "wer": 0.0,
+        "latency_sec": 4.023
+      },
+      {
+        "test": "normal/conference",
+        "expected": "We are planning a small conference in October, and I need your help with the program.",
+        "text": "We are planning a small conference in October and I need your help with the program.",
+        "wer": 0.0,
+        "latency_sec": 4.009
+      },
+      {
+        "test": "normal/deadline",
+        "expected": "Can you send me the report before Friday?",
+        "text": "Can you send me the report before Friday?",
+        "wer": 0.0,
+        "latency_sec": 3.671
+      },
+      {
+        "test": "normal/greeting",
+        "expected": "Hi, how are you doing today?",
+        "text": "Hi, how are you doing today?",
+        "wer": 0.0,
+        "latency_sec": 3.634
+      },
+      {
+        "test": "normal/meeting",
+        "expected": "I think we should meet next week to discuss the budget.",
+        "text": "I think we should meet next week to discuss the budget.",
+        "wer": 0.0,
+        "latency_sec": 3.823
+      },
+      {
+        "test": "normal/payment",
+        "expected": "Could you please explain how the payment process works in your country?",
+        "text": "Could you please explain how the payment process works in your country?",
+        "wer": 0.0,
+        "latency_sec": 3.839
+      },
+      {
+        "test": "normal/project",
+        "expected": "I'm working on a new project for our client this week.",
+        "text": "I'm working on a new project for our client this week.",
+        "wer": 0.0,
+        "latency_sec": 3.841
+      },
+      {
+        "test": "normal/software",
+        "expected": "I have a question about the new software update and the release date.",
+        "text": "I have a question about the new software update and the release date.",
+        "wer": 0.0,
+        "latency_sec": 3.905
+      },
+      {
+        "test": "normal/university",
+        "expected": "The University of California was founded in 1868 and it is very famous.",
+        "text": "The University of California was founded in 1868 and it is very famous.",
+        "wer": 0.0,
+        "latency_sec": 3.932
+      },
+      {
+        "test": "normal/weather",
+        "expected": "The weather is really nice, so let's go for a walk in the park.",
+        "text": "The weather is really nice so let's go for a walk in the park.",
+        "wer": 0.0,
+        "latency_sec": 3.99
+      }
+    ]
+  },
+  {
+    "model": "ggml-large-v3-turbo.bin",
+    "mean_wer": 0.0046,
+    "max_wer": 0.0769,
+    "mean_latency_sec": 6.008,
+    "max_latency_sec": 7.064,
+    "results": [
+      {
+        "test": "continuous_fast/continuous_fast",
+        "expected": "So we talked about the project last time and you said the design is almost ready. That is great news. I need you to check the budget with the finance team before Monday, because the client wants a final proposal by the end of the week. Also, can you invite the engineering lead to the meeting? She has a lot of questions about the API.",
+        "text": "So we talked about the project last time and you said the design is almost ready. That is great news. I need you to check the budget with a fine and steam for Monday because the client wants a final proposal by the end of the week. Also, can you invite the engineering lead to the meeting? She has a lot of questions about the API.",
+        "wer": 0.0769,
+        "latency_sec": 7.064
+      },
+      {
+        "test": "fast/airport",
+        "expected": "Yesterday I was at the airport and I missed my flight because of the traffic.",
+        "text": "Yesterday I was at the airport and I missed my flight because of the traffic.",
+        "wer": 0.0,
+        "latency_sec": 5.991
+      },
+      {
+        "test": "fast/conference",
+        "expected": "We are planning a small conference in October, and I need your help with the program.",
+        "text": "We are planning a small conference in October and I need your help with the program.",
+        "wer": 0.0,
+        "latency_sec": 6.01
+      },
+      {
+        "test": "fast/deadline",
+        "expected": "Can you send me the report before Friday?",
+        "text": "Can you send me the report before Friday?",
+        "wer": 0.0,
+        "latency_sec": 5.913
+      },
+      {
+        "test": "fast/greeting",
+        "expected": "Hi, how are you doing today?",
+        "text": "Hi, how are you doing today?",
+        "wer": 0.0,
+        "latency_sec": 5.893
+      },
+      {
+        "test": "fast/meeting",
+        "expected": "I think we should meet next week to discuss the budget.",
+        "text": "I think we should meet next week to discuss the budget.",
+        "wer": 0.0,
+        "latency_sec": 5.968
+      },
+      {
+        "test": "fast/payment",
+        "expected": "Could you please explain how the payment process works in your country?",
+        "text": "Could you please explain how the payment process works in your country?",
+        "wer": 0.0,
+        "latency_sec": 5.994
+      },
+      {
+        "test": "fast/project",
+        "expected": "I'm working on a new project for our client this week.",
+        "text": "I'm working on a new project for our client this week.",
+        "wer": 0.0,
+        "latency_sec": 5.953
+      },
+      {
+        "test": "fast/software",
+        "expected": "I have a question about the new software update and the release date.",
+        "text": "I have a question about the new software update and the release date.",
+        "wer": 0.0,
+        "latency_sec": 5.983
+      },
+      {
+        "test": "fast/university",
+        "expected": "The University of California was founded in 1868 and it is very famous.",
+        "text": "The University of California was founded in 1868 and it is very famous.",
+        "wer": 0.0,
+        "latency_sec": 5.982
+      },
+      {
+        "test": "fast/weather",
+        "expected": "The weather is really nice, so let's go for a walk in the park.",
+        "text": "The weather is really nice, so let's go for a walk in the park.",
+        "wer": 0.0,
+        "latency_sec": 6.003
+      },
+      {
+        "test": "noisy_crosstalk/airport",
+        "expected": "Yesterday I was at the airport and I missed my flight because of the traffic.",
+        "text": "Yesterday, I was at the airports and I missed my flight because of the traffic.",
+        "wer": 0.0667,
+        "latency_sec": 6.002
+      },
+      {
+        "test": "noisy_crosstalk/conference",
+        "expected": "We are planning a small conference in October, and I need your help with the program.",
+        "text": "We are planning a small conference in October, and I need your help with the program.",
+        "wer": 0.0,
+        "latency_sec": 6.031
+      },
+      {
+        "test": "noisy_crosstalk/deadline",
+        "expected": "Can you send me the report before Friday?",
+        "text": "Can you send me the report before Friday?",
+        "wer": 0.0,
+        "latency_sec": 5.922
+      },
+      {
+        "test": "noisy_crosstalk/greeting",
+        "expected": "Hi, how are you doing today?",
+        "text": "Hi, how are you doing today?",
+        "wer": 0.0,
+        "latency_sec": 5.892
+      },
+      {
+        "test": "noisy_crosstalk/meeting",
+        "expected": "I think we should meet next week to discuss the budget.",
+        "text": "I think we should meet next week to discuss the budget.",
+        "wer": 0.0,
+        "latency_sec": 5.945
+      },
+      {
+        "test": "noisy_crosstalk/payment",
+        "expected": "Could you please explain how the payment process works in your country?",
+        "text": "Could you please explain how the payment process works in your country?",
+        "wer": 0.0,
+        "latency_sec": 5.969
+      },
+      {
+        "test": "noisy_crosstalk/project",
+        "expected": "I'm working on a new project for our client this week.",
+        "text": "I'm working on a new project for our client this week.",
+        "wer": 0.0,
+        "latency_sec": 5.958
+      },
+      {
+        "test": "noisy_crosstalk/software",
+        "expected": "I have a question about the new software update and the release date.",
+        "text": "I have a question about the new software update and the release date.",
+        "wer": 0.0,
+        "latency_sec": 5.989
+      },
+      {
+        "test": "noisy_crosstalk/university",
+        "expected": "The University of California was founded in 1868 and it is very famous.",
+        "text": "The University of California was founded in 1868 and it is very famous.",
+        "wer": 0.0,
+        "latency_sec": 5.996
+      },
+      {
+        "test": "noisy_crosstalk/weather",
+        "expected": "The weather is really nice, so let's go for a walk in the park.",
+        "text": "The weather is really nice, so let's go for a walk in the park.",
+        "wer": 0.0,
+        "latency_sec": 6.017
+      },
+      {
+        "test": "normal/airport",
+        "expected": "Yesterday I was at the airport and I missed my flight because of the traffic.",
+        "text": "Yesterday, I was at the airport and I missed my flight because of the traffic.",
+        "wer": 0.0,
+        "latency_sec": 6.018
+      },
+      {
+        "test": "normal/conference",
+        "expected": "We are planning a small conference in October, and I need your help with the program.",
+        "text": "We are planning a small conference in October and I need your help with the program.",
+        "wer": 0.0,
+        "latency_sec": 6.005
+      },
+      {
+        "test": "normal/deadline",
+        "expected": "Can you send me the report before Friday?",
+        "text": "Can you send me the report before Friday?",
+        "wer": 0.0,
+        "latency_sec": 5.915
+      },
+      {
+        "test": "normal/greeting",
+        "expected": "Hi, how are you doing today?",
+        "text": "Hi, how are you doing today?",
+        "wer": 0.0,
+        "latency_sec": 5.894
+      },
+      {
+        "test": "normal/meeting",
+        "expected": "I think we should meet next week to discuss the budget.",
+        "text": "I think we should meet next week to discuss the budget.",
+        "wer": 0.0,
+        "latency_sec": 5.948
+      },
+      {
+        "test": "normal/payment",
+        "expected": "Could you please explain how the payment process works in your country?",
+        "text": "Could you please explain how the payment process works in your country?",
+        "wer": 0.0,
+        "latency_sec": 5.98
+      },
+      {
+        "test": "normal/project",
+        "expected": "I'm working on a new project for our client this week.",
+        "text": "I'm working on a new project for our client this week.",
+        "wer": 0.0,
+        "latency_sec": 5.965
+      },
+      {
+        "test": "normal/software",
+        "expected": "I have a question about the new software update and the release date.",
+        "text": "I have a question about the new software update and the release date.",
+        "wer": 0.0,
+        "latency_sec": 5.997
+      },
+      {
+        "test": "normal/university",
+        "expected": "The University of California was founded in 1868 and it is very famous.",
+        "text": "The University of California was founded in 1868 and it is very famous.",
+        "wer": 0.0,
+        "latency_sec": 5.996
+      },
+      {
+        "test": "normal/weather",
+        "expected": "The weather is really nice, so let's go for a walk in the park.",
+        "text": "The weather is really nice so let's go for a walk in the park.",
+        "wer": 0.0,
+        "latency_sec": 6.042
+      }
+    ]
+  }
+]

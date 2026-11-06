@@ -14,7 +14,12 @@ WHISPERCPP_BUILD_JOBS="${WHISPERCPP_BUILD_JOBS:-1}"
 WHISPERCPP_HOST="${WHISPERCPP_HOST:-127.0.0.1}"
 WHISPERCPP_PORT="${WHISPERCPP_PORT:-8178}"
 WHISPERCPP_MODEL_DIR="${WHISPERCPP_MODEL_DIR:-/media/yaroslav/DATA/ai_models/whisper.cpp/models}"
-WHISPERCPP_MODEL_NAME="${WHISPERCPP_MODEL_NAME:-medium.en}"
+# 2026-11: medium.en -> large-v3-turbo.
+# medium.en was the confirmed source of the "University of California" x9
+# repetition loop on fast speech. large-v3-turbo is faster on GPU and far
+# less prone to degeneration; offline A/B (recordings/benchmarks/en_to_ru/
+# stt_ab_cpu.json) showed no WER regression on the EN benchmark set.
+WHISPERCPP_MODEL_NAME="${WHISPERCPP_MODEL_NAME:-large-v3-turbo}"
 WHISPERCPP_MODEL_PATH="${WHISPERCPP_MODEL_PATH:-${WHISPERCPP_MODEL_DIR}/ggml-${WHISPERCPP_MODEL_NAME}.bin}"
 WHISPERCPP_PROMPT="${WHISPERCPP_PROMPT:-Yaroslav. Jaroslav. Ukraine. 26 years old. Hello everyone, my name is Yaroslav.}"
 

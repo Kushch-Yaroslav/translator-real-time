@@ -28,7 +28,9 @@ LISTEN_BRANCH_PROFILE = BranchRuntimeProfile(
     source_branch_id="listen",
     runtime_branch_id="primary",
     force_enabled=True,
-    stt_final_debounce_sec=0.30,
+    # 2026-11: 0.30 -> 0.15 — cut the wait after VAD final before STT,
+    # saves ~150ms on every phrase of the EN=>RU (listen) branch.
+    stt_final_debounce_sec=0.15,
     stt_partial_emit_enabled=False,
     silero_min_window_sec=0.80,
     silero_min_silence_ms=200,

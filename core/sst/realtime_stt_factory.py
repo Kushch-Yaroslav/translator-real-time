@@ -106,6 +106,8 @@ def create_realtime_stt_service(
                     speech_pad_ms=app_config.stt.silero_speech_pad_ms,
                     speech_threshold=app_config.stt.silero_speech_threshold,
                     timeout=max(10.0, app_config.stt.timeout),
+                    temperature=app_config.stt.whispercpp_temperature,
+                    temperature_inc=app_config.stt.whispercpp_temperature_inc,
                     on_log=on_log,
                 )
             ),
